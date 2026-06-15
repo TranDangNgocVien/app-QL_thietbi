@@ -33,6 +33,20 @@ class OrderService {
     return List<Device>.from(dummy.devices);
   }
 
+  String generateNextBorrowTicketId() {
+    final ids = <String>[
+      ..._orders.map((order) => order.id),
+      ...dummy.rentalOrders.map((order) => order.id),
+    ];
+    final maxNumber = ids.fold<int>(0, (maxValue, id) {
+      final match = RegExp(r'^PM(\d+)$').firstMatch(id);
+      if (match == null) return maxValue;
+      final number = int.tryParse(match.group(1) ?? '') ?? 0;
+      return number > maxValue ? number : maxValue;
+    });
+    return 'PM${(maxNumber + 1).toString().padLeft(3, '0')}';
+  }
+
   Future<RentalOrder> createOrderForCustomer({
     required String customerId,
     required String deviceId,
@@ -62,7 +76,7 @@ class OrderService {
       status: 'Đang thuê',
     );
     addOrder(order);
-    _decreaseDeviceAvailability(device.id);
+    _decreaseDeviceAvailability(device.id, 1);
     return order;
   }
 
@@ -100,11 +114,11 @@ class OrderService {
     return getActiveRentals() / getTotalDevices() * 100;
   }
 
-  void _decreaseDeviceAvailability(String deviceId) {
+  void _decreaseDeviceAvailability(String deviceId, int quantity) {
     final index = dummy.devices.indexWhere((item) => item.id == deviceId);
     if (index == -1) return;
     final device = dummy.devices[index];
-    final available = device.quantityAvailable - 1;
+    final available = device.quantityAvailable - quantity;
     dummy.devices[index] = device.copyWith(
       quantityAvailable: available < 0 ? 0 : available,
       status: available <= 0 ? 'Bảo trì' : 'Đang cho thuê',

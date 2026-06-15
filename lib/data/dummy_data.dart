@@ -119,24 +119,26 @@ List<Customer> customers = [
 
 List<RentalOrder> rentalOrders = [
   RentalOrder(
-    id: "DH01",
+    id: "PM001",
     customerName: "Nguyễn Văn An",
     customerPhone: "0901234567",
     customerEmail: "an@gmail.com",
     customerAddress: "Hà Nội",
     deviceName: "Camera Sony A7",
+    quantity: 1,
     startDate: DateTime(2026, 3, 1),
     endDate: DateTime(2026, 3, 3),
     totalPrice: 600000,
     status: "Đang thuê",
   ),
   RentalOrder(
-    id: "DH02",
+    id: "PM002",
     customerName: "Trần Thị Bình",
     customerPhone: "0912345678",
     customerEmail: "binh@gmail.com",
     customerAddress: "TP Hồ Chí Minh",
     deviceName: "Laptop Dell XPS",
+    quantity: 1,
     startDate: DateTime(2026, 2, 20),
     endDate: DateTime(2026, 2, 25),
     totalPrice: 1500000,

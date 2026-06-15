@@ -26,6 +26,7 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
   Customer? _selectedCustomer;
   Device? _selectedDevice;
   DateTimeRange? _selectedDate;
+  int _quantity = 1;
   bool _isLoading = true;
   bool _isSaving = false;
 
@@ -62,7 +63,7 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
 
   double get _totalPrice {
     if (_selectedDevice == null || _selectedDate == null) return 0;
-    return _rentalDays * _selectedDevice!.pricePerDay;
+    return _rentalDays * _selectedDevice!.pricePerDay * _quantity;
   }
 
   void _selectCustomer(Customer? customer) {
@@ -90,12 +91,13 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
     setState(() => _isSaving = true);
     try {
       final order = RentalOrder(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        id: _orderService.generateNextBorrowTicketId(),
         customerName: customer.name,
         customerPhone: customer.phone,
         customerEmail: customer.email,
         customerAddress: customer.address,
         deviceName: device.name,
+        quantity: _quantity,
         startDate: _selectedDate!.start,
         endDate: _selectedDate!.end,
         totalPrice: _totalPrice,
@@ -106,7 +108,7 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
       final deviceIndex = devices.indexWhere((item) => item.id == device.id);
       if (deviceIndex != -1) {
         final current = devices[deviceIndex];
-        final nextAvailable = current.quantityAvailable - 1;
+        final nextAvailable = current.quantityAvailable - _quantity;
         devices[deviceIndex] = current.copyWith(
           quantityAvailable: nextAvailable < 0 ? 0 : nextAvailable,
           status: nextAvailable <= 0 ? 'Bảo trì' : 'Đang cho thuê',
@@ -115,13 +117,13 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('Tạo đơn thuê thành công')));
+      ).showSnackBar(const SnackBar(content: Text('Tạo phiếu mượn thành công')));
       Navigator.pop(context, true);
     } catch (error) {
       if (!mounted) return;
       setState(() => _isSaving = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Không tạo được đơn thuê: $error')),
+        SnackBar(content: Text('Không tạo được phiếu mượn: $error')),
       );
       await _loadFormData();
     }
@@ -135,7 +137,7 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
     );
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Tạo đơn thuê')),
+      appBar: AppBar(title: const Text('Tạo phiếu mượn')),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : SingleChildScrollView(
@@ -224,8 +226,21 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
                           value == null ? 'Vui lòng chọn thiết bị' : null,
                       onChanged: _isSaving
                           ? null
-                          : (value) => setState(() => _selectedDevice = value),
+                          : (value) {
+                              setState(() {
+                                _selectedDevice = value;
+                                final maxQuantity =
+                                    value?.quantityAvailable ?? 1;
+                                if (_quantity > maxQuantity) {
+                                  _quantity = maxQuantity <= 0
+                                      ? 1
+                                      : maxQuantity;
+                                }
+                              });
+                            },
                     ),
+                    const SizedBox(height: 16),
+                    _quantitySelector(baseInputBorder),
                     const SizedBox(height: 16),
                     OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(
@@ -268,7 +283,7 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
                           : const Icon(Icons.assignment_turned_in_outlined),
-                      label: Text(_isSaving ? 'Đang lưu...' : 'Tạo đơn'),
+                      label: Text(_isSaving ? 'Đang lưu...' : 'Tạo phiếu mượn'),
                     ),
                   ],
                 ),
@@ -315,6 +330,39 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
       readOnly: true,
       style: const TextStyle(color: Colors.black87),
       decoration: _decoration(border, label).copyWith(prefixIcon: Icon(icon)),
+    );
+  }
+
+  Widget _quantitySelector(OutlineInputBorder border) {
+    final maxQuantity = _selectedDevice?.quantityAvailable ?? 0;
+    final quantities = maxQuantity <= 0
+        ? const <int>[]
+        : List<int>.generate(maxQuantity, (index) => index + 1);
+
+    return DropdownButtonFormField<int>(
+      initialValue: quantities.contains(_quantity) ? _quantity : null,
+      isExpanded: true,
+      decoration: _decoration(border, 'Số lượng thiết bị mượn').copyWith(
+        prefixIcon: const Icon(Icons.format_list_numbered),
+        helperText: _selectedDevice == null
+            ? 'Chọn thiết bị trước'
+            : 'Tối đa $maxQuantity thiết bị',
+      ),
+      items: quantities
+          .map(
+            (quantity) => DropdownMenuItem<int>(
+              value: quantity,
+              child: Text('$quantity thiết bị'),
+            ),
+          )
+          .toList(),
+      validator: (value) => value == null ? 'Vui lòng chọn số lượng' : null,
+      onChanged: _isSaving || _selectedDevice == null
+          ? null
+          : (value) {
+              if (value == null) return;
+              setState(() => _quantity = value);
+            },
     );
   }
 }

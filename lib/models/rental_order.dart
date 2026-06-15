@@ -7,6 +7,7 @@ class RentalOrder {
   final String customerEmail;
   final String customerAddress;
   final String deviceName;
+  final int quantity;
   final DateTime startDate;
   final DateTime endDate;
   final double totalPrice;
@@ -19,6 +20,7 @@ class RentalOrder {
     required this.customerEmail,
     required this.customerAddress,
     required this.deviceName,
+    this.quantity = 1,
     required this.startDate,
     required this.endDate,
     required this.totalPrice,
@@ -32,6 +34,7 @@ class RentalOrder {
     String? customerEmail,
     String? customerAddress,
     String? deviceName,
+    int? quantity,
     DateTime? startDate,
     DateTime? endDate,
     double? totalPrice,
@@ -44,6 +47,7 @@ class RentalOrder {
       customerEmail: customerEmail ?? this.customerEmail,
       customerAddress: customerAddress ?? this.customerAddress,
       deviceName: deviceName ?? this.deviceName,
+      quantity: quantity ?? this.quantity,
       startDate: startDate ?? this.startDate,
       endDate: endDate ?? this.endDate,
       totalPrice: totalPrice ?? this.totalPrice,
@@ -59,6 +63,7 @@ class RentalOrder {
       customerEmail: json['customerEmail'] as String,
       customerAddress: json['customerAddress'] as String,
       deviceName: json['deviceName'] as String,
+      quantity: json['quantity'] as int? ?? 1,
       startDate: DateTime.parse(json['startDate'] as String),
       endDate: DateTime.parse(json['endDate'] as String),
       totalPrice: (json['totalPrice'] as num).toDouble(),
@@ -74,6 +79,7 @@ class RentalOrder {
       'customerEmail': customerEmail,
       'customerAddress': customerAddress,
       'deviceName': deviceName,
+      'quantity': quantity,
       'startDate': startDate.toIso8601String(),
       'endDate': endDate.toIso8601String(),
       'totalPrice': totalPrice,

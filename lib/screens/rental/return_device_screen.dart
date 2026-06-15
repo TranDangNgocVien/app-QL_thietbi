@@ -342,12 +342,6 @@ class _ReturnDeviceScreenState extends State<ReturnDeviceScreen> {
       ),
     );
 
-    setState(() {
-      _selectedOrderId = null;
-      _lateFeeController.text = '0';
-      _damageController.text = '0';
-      _deviceCondition = 'Tốt';
-      _actualReturnDate = DateTime.now();
-    });
+    Navigator.pop(context, true);
   }
 }

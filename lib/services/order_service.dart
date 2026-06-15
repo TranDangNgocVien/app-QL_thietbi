@@ -29,6 +29,10 @@ class OrderService {
         .toList();
   }
 
+  Future<List<Device>> loadDevices() async {
+    return List<Device>.from(dummy.devices);
+  }
+
   Future<RentalOrder> createOrderForCustomer({
     required String customerId,
     required String deviceId,
@@ -51,6 +55,7 @@ class OrderService {
       customerEmail: customer.email,
       customerAddress: customer.address,
       deviceName: device.name,
+      quantity: 1,
       startDate: startDate,
       endDate: endDate,
       totalPrice: days * device.pricePerDay,

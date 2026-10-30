@@ -1,7 +1,14 @@
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 
+import '../../core/app_data_refresh.dart';
 import '../../core/constants/user_session.dart';
+import '../../data/dummy_data.dart' as dummy;
+import '../../models/customer.dart';
+import '../../models/device.dart';
+import '../../models/rental_order.dart';
+import '../../services/customer_storage_service.dart';
+import '../../services/device_storage_service.dart';
 import '../../services/order_service.dart';
 
 class StatisticsScreen extends StatefulWidget {
@@ -14,6 +21,7 @@ class StatisticsScreen extends StatefulWidget {
 class _StatisticsScreenState extends State<StatisticsScreen>
     with TickerProviderStateMixin {
   late final TabController _tabController;
+  late Future<_StatisticsData> _statisticsFuture;
 
   String _period = 'Tháng này';
   String _category = 'Tất cả danh mục';
@@ -22,6 +30,13 @@ class _StatisticsScreenState extends State<StatisticsScreen>
   void initState() {
     super.initState();
     _tabController = TabController(length: 4, vsync: this);
+    _statisticsFuture = _loadStatisticsData();
+    AppDataRefresh.notifier.addListener(_handleDataRefresh);
+  }
+
+  void _handleDataRefresh() {
+    if (!mounted) return;
+    setState(() => _statisticsFuture = _loadStatisticsData());
   }
 
   @override
@@ -42,64 +57,83 @@ class _StatisticsScreenState extends State<StatisticsScreen>
         ),
       );
     }
-    final orderService = OrderService();
-    final totalRevenue = orderService.orders.fold<double>(
-      0,
-      (sum, order) => sum + order.totalPrice,
-    );
-    final totalOrders = orderService.getTotalOrders();
-    final totalDevices = orderService.getTotalDevices();
-    final totalCustomers = orderService.getTotalCustomers();
-    final rentingPercentage = orderService.getRentingPercentage();
-
     return Scaffold(
       body: SafeArea(
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: _header(context),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: _filters(),
-            ),
-            const SizedBox(height: 10),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: _kpiGrid(
-                totalRevenue: totalRevenue,
-                totalOrders: totalOrders,
-                totalDevices: totalDevices,
-                totalCustomers: totalCustomers,
-              ),
-            ),
-            const SizedBox(height: 10),
-            TabBar(
-              controller: _tabController,
-              isScrollable: true,
-              tabAlignment: TabAlignment.start,
-              tabs: const [
-                Tab(text: 'Doanh thu'),
-                Tab(text: 'Thiết bị'),
-                Tab(text: 'Khách hàng'),
-                Tab(text: 'Đơn thuê'),
+        child: FutureBuilder<_StatisticsData>(
+          future: _statisticsFuture,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (snapshot.hasError) {
+              return Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                    'Không tải được dữ liệu thống kê: ${snapshot.error}',
+                  ),
+                ),
+              );
+            }
+
+            final data = snapshot.data!;
+            return Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                  child: _header(context),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: _filters(),
+                ),
+                const SizedBox(height: 10),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: _kpiGrid(data),
+                ),
+                const SizedBox(height: 10),
+                TabBar(
+                  controller: _tabController,
+                  isScrollable: true,
+                  tabAlignment: TabAlignment.start,
+                  tabs: const [
+                    Tab(text: 'Doanh thu'),
+                    Tab(text: 'Thiết bị'),
+                    Tab(text: 'Khách hàng'),
+                    Tab(text: 'Đơn thuê'),
+                  ],
+                ),
+                Expanded(
+                  child: TabBarView(
+                    controller: _tabController,
+                    children: [
+                      _revenueReport(data),
+                      _deviceReport(data),
+                      _customerReport(data),
+                      _orderReport(data),
+                    ],
+                  ),
+                ),
               ],
-            ),
-            Expanded(
-              child: TabBarView(
-                controller: _tabController,
-                children: [
-                  _revenueReport(rentingPercentage),
-                  _deviceReport(),
-                  _customerReport(),
-                  _orderReport(),
-                ],
-              ),
-            ),
-          ],
+            );
+          },
         ),
       ),
+    );
+  }
+
+  Future<_StatisticsData> _loadStatisticsData() async {
+    final orderService = OrderService();
+    await orderService.loadOrders(fallback: dummy.rentalOrders);
+    final devices = await DeviceStorageService.instance.loadDevices(
+      fallback: dummy.devices,
+    );
+    final customers = await CustomerStorageService.instance.loadCustomers();
+    return _StatisticsData(
+      orders: List<RentalOrder>.from(orderService.orders),
+      devices: devices,
+      customers: customers,
     );
   }
 
@@ -155,7 +189,7 @@ class _StatisticsScreenState extends State<StatisticsScreen>
         );
 
         final periodField = DropdownButtonFormField<String>(
-          value: _period,
+          initialValue: _period,
           style: const TextStyle(color: Colors.black87),
           dropdownColor: Colors.white,
           decoration: InputDecoration(
@@ -186,7 +220,7 @@ class _StatisticsScreenState extends State<StatisticsScreen>
         );
 
         final categoryField = DropdownButtonFormField<String>(
-          value: _category,
+          initialValue: _category,
           style: const TextStyle(color: Colors.black87),
           dropdownColor: Colors.white,
           decoration: InputDecoration(
@@ -236,18 +270,13 @@ class _StatisticsScreenState extends State<StatisticsScreen>
     );
   }
 
-  Widget _kpiGrid({
-    required double totalRevenue,
-    required int totalOrders,
-    required int totalDevices,
-    required int totalCustomers,
-  }) {
+  Widget _kpiGrid(_StatisticsData data) {
     return Row(
       children: [
         Expanded(
           child: _kpiCard(
-            title: 'Doanh thu đơn thuê',
-            value: '${totalRevenue.toStringAsFixed(0)} đ',
+            title: 'Doanh thu',
+            value: _formatCurrency(data.totalRevenue),
             valueSize: 16,
             color: const Color(0xFF0D47A1),
           ),
@@ -255,24 +284,24 @@ class _StatisticsScreenState extends State<StatisticsScreen>
         const SizedBox(width: 8),
         Expanded(
           child: _kpiCard(
-            title: 'Tổng đơn thuê',
-            value: '$totalOrders',
+            title: 'Tổng đơn',
+            value: '${data.totalOrders}',
             color: const Color(0xFF1565C0),
           ),
         ),
         const SizedBox(width: 8),
         Expanded(
           child: _kpiCard(
-            title: 'Thiết bị có thuê',
-            value: '$totalDevices',
+            title: 'Thiết bị',
+            value: '${data.totalDeviceQuantity}',
             color: const Color(0xFF2E7D32),
           ),
         ),
         const SizedBox(width: 8),
         Expanded(
           child: _kpiCard(
-            title: 'Khách đã thuê',
-            value: '$totalCustomers',
+            title: 'Khách hàng',
+            value: '${data.totalCustomers}',
             color: const Color(0xFF6A1B9A),
           ),
         ),
@@ -289,7 +318,7 @@ class _StatisticsScreenState extends State<StatisticsScreen>
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.09),
+        color: color.withValues(alpha: 0.09),
         borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
@@ -312,14 +341,14 @@ class _StatisticsScreenState extends State<StatisticsScreen>
     );
   }
 
-  Widget _revenueReport(double rentingPercentage) {
+  Widget _revenueReport(_StatisticsData data) {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         _sectionCard(
           title: 'Báo cáo doanh thu',
           subtitle:
-              'Xu hướng doanh thu theo thời gian và doanh thu trung bình/đơn',
+              'Tỷ lệ đơn đang thuê và đơn đã hoàn thành từ dữ liệu hiện có',
           child: Column(
             children: [
               SizedBox(
@@ -330,8 +359,9 @@ class _StatisticsScreenState extends State<StatisticsScreen>
                     centerSpaceRadius: 50,
                     sections: [
                       PieChartSectionData(
-                        value: rentingPercentage.clamp(0, 100),
-                        title: '${rentingPercentage.toStringAsFixed(1)}%',
+                        value: data.activeOrderPercentage.clamp(0, 100),
+                        title:
+                            '${data.activeOrderPercentage.toStringAsFixed(1)}%',
                         color: const Color(0xFF1976D2),
                         radius: 60,
                         titleStyle: const TextStyle(
@@ -341,9 +371,9 @@ class _StatisticsScreenState extends State<StatisticsScreen>
                         ),
                       ),
                       PieChartSectionData(
-                        value: (100 - rentingPercentage).clamp(0, 100),
+                        value: (100 - data.activeOrderPercentage).clamp(0, 100),
                         title:
-                            '${(100 - rentingPercentage).toStringAsFixed(1)}%',
+                            '${(100 - data.activeOrderPercentage).toStringAsFixed(1)}%',
                         color: Colors.grey.shade400,
                         radius: 60,
                         titleStyle: const TextStyle(
@@ -357,8 +387,15 @@ class _StatisticsScreenState extends State<StatisticsScreen>
                 ),
               ),
               const SizedBox(height: 12),
-              const Text(
-                'Biểu đồ đang dùng dữ liệu mô phỏng, sẽ nối dữ liệu thật sau.',
+              _legendRow(
+                const Color(0xFF1976D2),
+                'Đang thuê',
+                data.activeOrders,
+              ),
+              _legendRow(
+                Colors.grey.shade500,
+                'Đã hoàn thành/khác',
+                data.totalOrders - data.activeOrders,
               ),
             ],
           ),
@@ -366,141 +403,153 @@ class _StatisticsScreenState extends State<StatisticsScreen>
         const SizedBox(height: 12),
         _bulletCard(
           title: 'Chỉ số trọng tâm',
-          rows: const [
-            'Tổng doanh thu trong kỳ',
-            'Doanh thu trung bình trên mỗi đơn thuê',
-            'Doanh thu từ phí phạt và bồi thường',
-            'So sánh cùng kỳ năm trước',
+          rows: [
+            'Tổng doanh thu: ${_formatCurrency(data.totalRevenue)}',
+            'Doanh thu trung bình/đơn: ${_formatCurrency(data.averageRevenue)}',
+            'Doanh thu tháng này: ${_formatCurrency(data.monthRevenue)}',
+            'Đơn quá hạn: ${data.overdueOrders}',
           ],
         ),
       ],
     );
   }
 
-  Widget _deviceReport() {
+  Widget _deviceReport(_StatisticsData data) {
+    final attentionDevices = data.devices
+        .where(
+          (device) =>
+              device.quantityAvailable == 0 ||
+              device.status == 'Bảo trì' ||
+              device.status == 'Hỏng' ||
+              device.status == 'Ngừng cho thuê',
+        )
+        .take(8)
+        .toList();
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         _bulletCard(
           title: 'Báo cáo thiết bị',
-          rows: const [
-            'Top thiết bị được thuê nhiều nhất',
-            'Tỷ lệ lấp đầy theo từng thiết bị',
-            'Thiết bị đang bảo trì hoặc cần kiểm tra',
-            'Chi phí bảo trì theo tháng',
+          rows: [
+            'Tổng số lượng thiết bị: ${data.totalDeviceQuantity}',
+            'Sẵn sàng cho thuê: ${data.availableDeviceQuantity}',
+            'Đang được thuê: ${data.rentedDeviceQuantity}',
+            'Cần chú ý: ${attentionDevices.length}',
           ],
         ),
         const SizedBox(height: 12),
         _sectionCard(
           title: 'Danh sách cần chú ý',
-          subtitle: 'UI mẫu theo UC-05.2.2',
-          child: Column(
-            children: const [
-              ListTile(
-                dense: true,
-                leading: Icon(Icons.warning_amber),
-                title: Text('TB-008 | Loa JBL PRX815'),
-                subtitle: Text(
-                  'Trạng thái: Bảo trì - kiểm tra trước lần thuê tiếp theo',
+          subtitle: 'Thiết bị hết khả dụng, bảo trì hoặc hỏng',
+          child: attentionDevices.isEmpty
+              ? const Text('Không có thiết bị cần chú ý.')
+              : Column(
+                  children: attentionDevices
+                      .map(
+                        (device) => ListTile(
+                          dense: true,
+                          leading: const Icon(Icons.warning_amber),
+                          title: Text('${device.id} | ${device.name}'),
+                          subtitle: Text(
+                            'Trạng thái: ${device.status} - khả dụng ${device.quantityAvailable}/${device.quantityTotal}',
+                          ),
+                        ),
+                      )
+                      .toList(),
                 ),
-              ),
-              Divider(height: 1),
-              ListTile(
-                dense: true,
-                leading: Icon(Icons.build_circle_outlined),
-                title: Text('TB-011 | Máy chiếu Epson'),
-                subtitle: Text('Trạng thái: Hỏng nhẹ - chờ linh kiện thay thế'),
-              ),
-            ],
-          ),
         ),
       ],
     );
   }
 
-  Widget _customerReport() {
+  Widget _customerReport(_StatisticsData data) {
+    final topCustomers = data.topCustomers.take(8).toList();
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         _bulletCard(
           title: 'Báo cáo khách hàng',
-          rows: const [
-            'Khách hàng VIP theo giá trị giao dịch',
-            'Khách hàng mới trong kỳ',
-            'Khách hàng có công nợ cần theo dõi',
-            'Khách hàng có lịch sử vi phạm',
+          rows: [
+            'Tổng khách hàng: ${data.totalCustomers}',
+            'Khách đã phát sinh đơn thuê: ${data.rentedCustomerCount}',
+            'Khách chưa có đơn thuê: ${data.totalCustomers - data.rentedCustomerCount}',
+            'Giá trị thuê trung bình/khách: ${_formatCurrency(data.averageRevenuePerCustomer)}',
           ],
         ),
         const SizedBox(height: 12),
         _sectionCard(
-          title: 'Nhóm khách hàng',
-          subtitle: 'Phân nhóm để phục vụ chiến dịch chăm sóc',
-          child: Column(
-            children: const [
-              ListTile(
-                dense: true,
-                leading: CircleAvatar(radius: 12, child: Text('A')),
-                title: Text('Nhóm A - VIP (5 khách hàng)'),
-              ),
-              Divider(height: 1),
-              ListTile(
-                dense: true,
-                leading: CircleAvatar(radius: 12, child: Text('B')),
-                title: Text('Nhóm B - Thường xuyên (18 khách hàng)'),
-              ),
-              Divider(height: 1),
-              ListTile(
-                dense: true,
-                leading: CircleAvatar(radius: 12, child: Text('C')),
-                title: Text('Nhóm C - Cần nhắc nợ (3 khách hàng)'),
-              ),
-            ],
-          ),
+          title: 'Khách hàng theo giá trị thuê',
+          subtitle: 'Sắp xếp theo tổng tiền các phiếu mượn hiện có',
+          child: topCustomers.isEmpty
+              ? const Text('Chưa có dữ liệu đơn thuê theo khách hàng.')
+              : Column(
+                  children: topCustomers
+                      .map(
+                        (item) => ListTile(
+                          dense: true,
+                          leading: CircleAvatar(
+                            radius: 14,
+                            child: Text('${topCustomers.indexOf(item) + 1}'),
+                          ),
+                          title: Text(item.name),
+                          subtitle: Text(
+                            '${item.orderCount} đơn - ${_formatCurrency(item.revenue)}',
+                          ),
+                        ),
+                      )
+                      .toList(),
+                ),
         ),
       ],
     );
   }
 
-  Widget _orderReport() {
+  Widget _orderReport(_StatisticsData data) {
+    final recentOrders = data.orders.take(10).toList();
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         _bulletCard(
           title: 'Báo cáo đơn thuê',
-          rows: const [
-            'Đơn đang hoạt động',
-            'Đơn sắp đến hạn trả (24h/48h)',
-            'Đơn quá hạn chưa xử lý',
-            'Tỷ lệ hoàn thành đúng hạn',
+          rows: [
+            'Tổng đơn thuê: ${data.totalOrders}',
+            'Đơn đang thuê: ${data.activeOrders}',
+            'Đơn trả hôm nay: ${data.dueTodayOrders}',
+            'Đơn quá hạn: ${data.overdueOrders}',
           ],
         ),
         const SizedBox(height: 12),
         _sectionCard(
           title: 'Bảng trạng thái đơn',
-          subtitle: 'UI khung dữ liệu để nối xử lý sau',
-          child: DataTable(
-            columns: const [
-              DataColumn(label: Text('Mã đơn')),
-              DataColumn(label: Text('Trạng thái')),
-              DataColumn(label: Text('Nhắc hạn')),
-            ],
-            rows: const [
-              DataRow(
-                cells: [
-                  DataCell(Text('DT-20260403-001')),
-                  DataCell(Text('Đang thuê')),
-                  DataCell(Text('Còn 12 giờ')),
-                ],
-              ),
-              DataRow(
-                cells: [
-                  DataCell(Text('DT-20260401-014')),
-                  DataCell(Text('Quá hạn')),
-                  DataCell(Text('Đã gửi cảnh báo')),
-                ],
-              ),
-            ],
-          ),
+          subtitle: '10 phiếu mượn mới nhất trong dữ liệu',
+          child: recentOrders.isEmpty
+              ? const Text('Chưa có phiếu mượn.')
+              : SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: DataTable(
+                    columns: const [
+                      DataColumn(label: Text('Mã đơn')),
+                      DataColumn(label: Text('Khách hàng')),
+                      DataColumn(label: Text('Trạng thái')),
+                      DataColumn(label: Text('Ngày trả')),
+                    ],
+                    rows: recentOrders
+                        .map(
+                          (order) => DataRow(
+                            cells: [
+                              DataCell(Text(order.id)),
+                              DataCell(Text(order.customerName)),
+                              DataCell(Text(order.status)),
+                              DataCell(Text(_formatDate(order.endDate))),
+                            ],
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ),
         ),
       ],
     );
@@ -561,9 +610,162 @@ class _StatisticsScreenState extends State<StatisticsScreen>
     );
   }
 
+  Widget _legendRow(Color color, String label, int value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        children: [
+          Container(
+            width: 12,
+            height: 12,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 8),
+          Expanded(child: Text(label)),
+          Text('$value', style: const TextStyle(fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+
+  String _formatCurrency(double value) {
+    final rounded = value.round().toString();
+    final buffer = StringBuffer();
+    for (var i = 0; i < rounded.length; i++) {
+      final positionFromEnd = rounded.length - i;
+      buffer.write(rounded[i]);
+      if (positionFromEnd > 1 && positionFromEnd % 3 == 1) {
+        buffer.write('.');
+      }
+    }
+    return '${buffer.toString()} đ';
+  }
+
+  String _formatDate(DateTime date) {
+    return '${date.day.toString().padLeft(2, '0')}/'
+        '${date.month.toString().padLeft(2, '0')}/'
+        '${date.year}';
+  }
+
   @override
   void dispose() {
+    AppDataRefresh.notifier.removeListener(_handleDataRefresh);
     _tabController.dispose();
     super.dispose();
+  }
+}
+
+class _StatisticsData {
+  final List<RentalOrder> orders;
+  final List<Device> devices;
+  final List<Customer> customers;
+  final DateTime today;
+
+  _StatisticsData({
+    required List<RentalOrder> orders,
+    required this.devices,
+    required this.customers,
+  }) : orders = List<RentalOrder>.from(orders)
+         ..sort((a, b) => b.startDate.compareTo(a.startDate)),
+       today = DateTime.now();
+
+  int get totalOrders => orders.length;
+
+  int get activeOrders => orders.where(_isActiveOrder).length;
+
+  int get dueTodayOrders => orders
+      .where(
+        (order) =>
+            _isActiveOrder(order) &&
+            _dateOnly(order.endDate) == _dateOnly(today),
+      )
+      .length;
+
+  int get overdueOrders => orders
+      .where(
+        (order) =>
+            _isActiveOrder(order) &&
+            _dateOnly(order.endDate).isBefore(_dateOnly(today)),
+      )
+      .length;
+
+  double get totalRevenue =>
+      orders.fold<double>(0, (sum, order) => sum + order.totalPrice);
+
+  double get averageRevenue =>
+      totalOrders == 0 ? 0 : totalRevenue / totalOrders;
+
+  double get monthRevenue => orders
+      .where(
+        (order) =>
+            order.startDate.year == today.year &&
+            order.startDate.month == today.month,
+      )
+      .fold<double>(0, (sum, order) => sum + order.totalPrice);
+
+  double get activeOrderPercentage =>
+      totalOrders == 0 ? 0 : activeOrders / totalOrders * 100;
+
+  int get totalCustomers => customers.length;
+
+  int get rentedCustomerCount =>
+      orders.map((order) => order.customerName).toSet().length;
+
+  double get averageRevenuePerCustomer =>
+      rentedCustomerCount == 0 ? 0 : totalRevenue / rentedCustomerCount;
+
+  int get totalDeviceQuantity =>
+      devices.fold<int>(0, (sum, device) => sum + device.quantityTotal);
+
+  int get availableDeviceQuantity =>
+      devices.fold<int>(0, (sum, device) => sum + device.quantityAvailable);
+
+  int get rentedDeviceQuantity =>
+      (totalDeviceQuantity - availableDeviceQuantity).clamp(
+        0,
+        totalDeviceQuantity,
+      );
+
+  List<_CustomerRevenue> get topCustomers {
+    final summaries = <String, _CustomerRevenue>{};
+    for (final order in orders) {
+      final summary =
+          summaries[order.customerName] ??
+          _CustomerRevenue(name: order.customerName);
+      summaries[order.customerName] = summary.add(order.totalPrice);
+    }
+    final result = summaries.values.toList()
+      ..sort((a, b) => b.revenue.compareTo(a.revenue));
+    return result;
+  }
+
+  static bool _isActiveOrder(RentalOrder order) {
+    return order.status == 'Đang thuê' ||
+        order.status == 'Đang mượn' ||
+        order.status == 'Quá hạn';
+  }
+
+  static DateTime _dateOnly(DateTime date) {
+    return DateTime(date.year, date.month, date.day);
+  }
+}
+
+class _CustomerRevenue {
+  final String name;
+  final double revenue;
+  final int orderCount;
+
+  const _CustomerRevenue({
+    required this.name,
+    this.revenue = 0,
+    this.orderCount = 0,
+  });
+
+  _CustomerRevenue add(double orderRevenue) {
+    return _CustomerRevenue(
+      name: name,
+      revenue: revenue + orderRevenue,
+      orderCount: orderCount + 1,
+    );
   }
 }

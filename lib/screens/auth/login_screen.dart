@@ -12,21 +12,11 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  static const _roles = [
-    ('Nhân viên', Icons.badge_outlined),
-    ('Quản lý', Icons.admin_panel_settings_outlined),
-    ('Khách hàng', Icons.person_outline),
-    ('Kỹ thuật viên', Icons.engineering_outlined),
-  ];
-
   final TextEditingController emailController = TextEditingController();
   final TextEditingController passwordController = TextEditingController();
 
   bool hidePassword = true;
   bool _isSubmitting = false;
-  late String selectedRole = _roles.any((item) => item.$1 == UserSession.role)
-      ? UserSession.role
-      : '';
 
   @override
   void dispose() {
@@ -65,91 +55,13 @@ class _LoginScreenState extends State<LoginScreen> {
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.16),
+                  color: Colors.white.withValues(alpha: 0.16),
                   borderRadius: BorderRadius.circular(18),
                   border: Border.all(color: Colors.white24),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Vai trò đăng nhập',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    GridView.builder(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      gridDelegate:
-                          const SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: 2,
-                            crossAxisSpacing: 10,
-                            mainAxisSpacing: 10,
-                            childAspectRatio: 2.65,
-                          ),
-                      itemCount: _roles.length,
-                      itemBuilder: (context, index) {
-                        final item = _roles[index];
-                        final selected = selectedRole == item.$1;
-                        return Material(
-                          key: ValueKey('login-role-${item.$1}'),
-                          color: selected
-                              ? AppTheme.primaryColor
-                              : const Color(0xFFF7FBFD),
-                          borderRadius: BorderRadius.circular(14),
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(14),
-                            onTap: () {
-                              setState(() => selectedRole = item.$1);
-                            },
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                              ),
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(14),
-                                border: Border.all(
-                                  color: selected
-                                      ? AppTheme.primaryColor
-                                      : const Color(0xFF7FA8BC),
-                                  width: selected ? 2 : 1.2,
-                                ),
-                              ),
-                              child: Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(
-                                    item.$2,
-                                    size: 20,
-                                    color: selected
-                                        ? Colors.white
-                                        : const Color(0xFF234E63),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Flexible(
-                                    child: Text(
-                                      item.$1,
-                                      maxLines: 2,
-                                      textAlign: TextAlign.center,
-                                      style: TextStyle(
-                                        color: selected
-                                            ? Colors.white
-                                            : const Color(0xFF183B56),
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 14),
                     TextField(
                       controller: emailController,
                       style: const TextStyle(color: Colors.white),
@@ -202,9 +114,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       onPressed: _isSubmitting ? null : _login,
                       icon: const Icon(Icons.login),
                       label: Text(
-                        _isSubmitting
-                            ? 'Đang đăng nhập...'
-                            : 'Đăng nhập với vai trò $selectedRole',
+                        _isSubmitting ? 'Đang đăng nhập...' : 'Đăng nhập',
                       ),
                     ),
                   ],
@@ -240,13 +150,6 @@ class _LoginScreenState extends State<LoginScreen> {
     final usernameOrEmail = emailController.text.trim();
     final password = passwordController.text;
 
-    if (selectedRole.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Vui lòng chọn vai trò đăng nhập')),
-      );
-      return;
-    }
-
     if (usernameOrEmail.isEmpty || password.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Vui lòng nhập tài khoản và mật khẩu')),
@@ -259,11 +162,7 @@ class _LoginScreenState extends State<LoginScreen> {
     AuthUser? user;
     try {
       user = await AuthService.instance
-          .login(
-            emailOrUsername: usernameOrEmail,
-            password: password,
-            role: selectedRole,
-          )
+          .login(emailOrUsername: usernameOrEmail, password: password)
           .timeout(const Duration(seconds: 12));
     } catch (error) {
       if (!mounted) return;

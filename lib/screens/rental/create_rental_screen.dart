@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 
-import '../../data/dummy_data.dart';
 import '../../models/customer.dart';
 import '../../models/device.dart';
-import '../../models/rental_order.dart';
 import '../../services/order_service.dart';
 
 class CreateOrderScreen extends StatefulWidget {
@@ -20,6 +18,7 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
   final _customerPhoneController = TextEditingController();
   final _customerEmailController = TextEditingController();
   final _customerAddressController = TextEditingController();
+  final _quantityController = TextEditingController(text: '1');
 
   List<Customer> _customers = const [];
   List<Device> _availableDevices = const [];
@@ -41,16 +40,18 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
     _customerPhoneController.dispose();
     _customerEmailController.dispose();
     _customerAddressController.dispose();
+    _quantityController.dispose();
     super.dispose();
   }
 
   Future<void> _loadFormData() async {
     setState(() => _isLoading = true);
+    final loadedCustomers = await _orderService.loadRentalCustomers();
+    final loadedDevices = await _orderService.loadAvailableDevices();
+    if (!mounted) return;
     setState(() {
-      _customers = List<Customer>.from(customers);
-      _availableDevices = devices
-          .where((device) => device.quantityAvailable > 0)
-          .toList();
+      _customers = loadedCustomers;
+      _availableDevices = loadedDevices;
       _isLoading = false;
     });
   }
@@ -87,37 +88,22 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
     final customer = _selectedCustomer;
     final device = _selectedDevice;
     if (customer == null || device == null) return;
+    final quantity = int.parse(_quantityController.text.trim());
 
     setState(() => _isSaving = true);
     try {
-      final order = RentalOrder(
-        id: _orderService.generateNextBorrowTicketId(),
-        customerName: customer.name,
-        customerPhone: customer.phone,
-        customerEmail: customer.email,
-        customerAddress: customer.address,
-        deviceName: device.name,
-        quantity: _quantity,
+      await _orderService.createRentalOrder(
+        customer: customer,
+        device: device,
+        quantity: quantity,
         startDate: _selectedDate!.start,
         endDate: _selectedDate!.end,
-        totalPrice: _totalPrice,
-        status: 'Đang thuê',
       );
-      _orderService.addOrder(order);
 
-      final deviceIndex = devices.indexWhere((item) => item.id == device.id);
-      if (deviceIndex != -1) {
-        final current = devices[deviceIndex];
-        final nextAvailable = current.quantityAvailable - _quantity;
-        devices[deviceIndex] = current.copyWith(
-          quantityAvailable: nextAvailable < 0 ? 0 : nextAvailable,
-          status: nextAvailable <= 0 ? 'Bảo trì' : 'Đang cho thuê',
-        );
-      }
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Tạo phiếu mượn thành công')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Tạo phiếu mượn thành công')),
+      );
       Navigator.pop(context, true);
     } catch (error) {
       if (!mounted) return;
@@ -236,6 +222,7 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
                                       ? 1
                                       : maxQuantity;
                                 }
+                                _quantityController.text = _quantity.toString();
                               });
                             },
                     ),
@@ -335,34 +322,33 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
 
   Widget _quantitySelector(OutlineInputBorder border) {
     final maxQuantity = _selectedDevice?.quantityAvailable ?? 0;
-    final quantities = maxQuantity <= 0
-        ? const <int>[]
-        : List<int>.generate(maxQuantity, (index) => index + 1);
 
-    return DropdownButtonFormField<int>(
-      initialValue: quantities.contains(_quantity) ? _quantity : null,
-      isExpanded: true,
+    return TextFormField(
+      controller: _quantityController,
+      enabled: !_isSaving && _selectedDevice != null,
+      keyboardType: TextInputType.number,
       decoration: _decoration(border, 'Số lượng thiết bị mượn').copyWith(
         prefixIcon: const Icon(Icons.format_list_numbered),
         helperText: _selectedDevice == null
             ? 'Chọn thiết bị trước'
             : 'Tối đa $maxQuantity thiết bị',
       ),
-      items: quantities
-          .map(
-            (quantity) => DropdownMenuItem<int>(
-              value: quantity,
-              child: Text('$quantity thiết bị'),
-            ),
-          )
-          .toList(),
-      validator: (value) => value == null ? 'Vui lòng chọn số lượng' : null,
-      onChanged: _isSaving || _selectedDevice == null
-          ? null
-          : (value) {
-              if (value == null) return;
-              setState(() => _quantity = value);
-            },
+      validator: (value) {
+        if (_selectedDevice == null) return 'Vui lòng chọn thiết bị trước';
+        final parsed = int.tryParse((value ?? '').trim());
+        if (parsed == null || parsed <= 0) {
+          return 'Vui lòng nhập số lượng hợp lệ';
+        }
+        if (parsed > maxQuantity) {
+          return 'Số lượng không được vượt quá $maxQuantity';
+        }
+        return null;
+      },
+      onChanged: (value) {
+        final parsed = int.tryParse(value.trim());
+        if (parsed == null || parsed <= 0) return;
+        setState(() => _quantity = parsed);
+      },
     );
   }
 }

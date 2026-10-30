@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
@@ -8,7 +10,9 @@ class AppDatabase {
 
   static final AppDatabase instance = AppDatabase._();
   static const String _databaseName = 'equipment_rental.db';
-  static const int _databaseVersion = 6;
+  static const int _databaseVersion = 9;
+  static const String _externalDatabaseAsset =
+      'assets/database/quan_ly_muon_tra_thiet_bi.sqlite';
 
   Database? _database;
 
@@ -16,6 +20,11 @@ class AppDatabase {
     if (_database != null) return _database!;
     _database = await _openDatabase();
     return _database!;
+  }
+
+  Future<void> close() async {
+    await _database?.close();
+    _database = null;
   }
 
   Future<Database> _openDatabase() async {
@@ -26,10 +35,16 @@ class AppDatabase {
       path,
       version: _databaseVersion,
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
+      onOpen: (db) async {
+        await _synchronizeReferenceData(db);
+      },
       onCreate: (db, version) async {
         await _createLegacyTables(db);
         await _createBusinessSchema(db);
         await _seedBusinessData(db);
+        await _seedRealisticAppData(db);
+        await _importBundledExternalData(db);
+        await _createIntegrityTriggers(db);
         await _synchronizeReferenceData(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
@@ -50,6 +65,19 @@ class AppDatabase {
         if (oldVersion < 6) {
           await _synchronizeReferenceData(db);
         }
+        if (oldVersion < 7) {
+          await _seedRealisticAppData(db);
+          await _createIntegrityTriggers(db);
+          await _synchronizeReferenceData(db);
+        }
+        if (oldVersion < 8) {
+          await _seedRealisticAppData(db);
+          await _synchronizeReferenceData(db);
+        }
+        if (oldVersion < 9) {
+          await _importBundledExternalData(db);
+          await _synchronizeReferenceData(db);
+        }
       },
     );
   }
@@ -60,6 +88,7 @@ class AppDatabase {
     await _ensureLinhTechnicianAccount(db);
     await _ensureTechnicianAccount(db);
     await _ensureVienManagerAccount(db);
+    await _ensureStaffAccount(db);
   }
 
   Future<void> _seedMissingBusinessData(Database db) async {
@@ -155,6 +184,49 @@ class AppDatabase {
     };
     if (existingUsers.isEmpty) {
       await db.insert('AppUsers', {'Id': 'USR-MANAGER-NV008', ...values});
+    } else {
+      await db.update(
+        'AppUsers',
+        values,
+        where: 'Id = ?',
+        whereArgs: [existingUsers.first['Id']],
+      );
+    }
+  }
+
+  Future<void> _ensureStaffAccount(Database db) async {
+    await db.insert('NhanVien', {
+      'MaNV': 'NV002',
+      'TenNV': 'Phan Gia Bảo',
+      'ChucVu': 'Nhân viên lập phiếu',
+      'QuyenHan': 'Nhân viên',
+      'SDT': '0901000010',
+      'Email': 'bao@thietbi.vn',
+      'MatKhau': '123456',
+      'TrangThai': 'Đang làm việc',
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
+
+    final existingUsers = await db.query(
+      'AppUsers',
+      columns: ['Id'],
+      where: 'MaNV = ? OR lower(Email) = lower(?)',
+      whereArgs: ['NV002', 'staff@thietbi.vn'],
+      limit: 1,
+    );
+    final values = {
+      'Email': 'staff@thietbi.vn',
+      'Phone': '0909000002',
+      'FullName': 'Nhân viên công ty',
+      'RoleId': 'company_staff',
+      'UnitId': 'UNIT01',
+      'PasswordSalt': 'APP-USR-STAFF',
+      'PasswordHash': '123456',
+      'IsActive': 1,
+      'MaNV': 'NV002',
+      'MaKH': null,
+    };
+    if (existingUsers.isEmpty) {
+      await db.insert('AppUsers', {'Id': 'USR-STAFF', ...values});
     } else {
       await db.update(
         'AppUsers',
@@ -285,6 +357,12 @@ class AppDatabase {
     }
   }
 
+  Future<void> _createIntegrityTriggers(Database db) async {
+    for (final sql in _integrityTriggerStatements) {
+      await db.execute(sql);
+    }
+  }
+
   Future<void> _seedBusinessData(Database db) async {
     final count =
         Sqflite.firstIntValue(
@@ -298,6 +376,40 @@ class AppDatabase {
         await transaction.execute(sql);
       }
     });
+  }
+
+  Future<void> _seedRealisticAppData(Database db) async {
+    await db.transaction((transaction) async {
+      for (final sql in _realisticSeedStatements) {
+        await transaction.execute(sql);
+      }
+    });
+  }
+
+  Future<void> _importBundledExternalData(Database db) async {
+    final externalPath = await _copyExternalDatabaseAsset();
+    final escapedPath = externalPath.replaceAll("'", "''");
+    await db.execute("ATTACH DATABASE '$escapedPath' AS external_source");
+    await db.transaction((transaction) async {
+      for (final sql in _externalImportStatements) {
+        await transaction.execute(sql);
+      }
+    });
+  }
+
+  Future<String> _copyExternalDatabaseAsset() async {
+    final data = await rootBundle.load(_externalDatabaseAsset);
+    final databasesPath = await getDatabasesPath();
+    final importPath = p.join(
+      databasesPath,
+      'external_quan_ly_muon_tra.sqlite',
+    );
+    final file = File(importPath);
+    await file.writeAsBytes(
+      data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+      flush: true,
+    );
+    return importPath;
   }
 
   Future<void> _migrateLegacyData(Database db) async {
@@ -343,6 +455,858 @@ class AppDatabase {
     ''');
   }
 }
+
+const List<String> _integrityTriggerStatements = [
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_NhaCungCap_validate_insert
+  BEFORE INSERT ON NhaCungCap
+  BEGIN
+    SELECT CASE
+      WHEN NEW.Email IS NOT NULL AND NEW.Email NOT LIKE '%_@_%._%'
+        THEN RAISE(ABORT, 'Email nhà cung cấp không hợp lệ')
+      WHEN NEW.SDT IS NOT NULL AND NEW.SDT GLOB '*[^0-9+]*'
+        THEN RAISE(ABORT, 'Số điện thoại nhà cung cấp không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_NhaCungCap_validate_update
+  BEFORE UPDATE ON NhaCungCap
+  BEGIN
+    SELECT CASE
+      WHEN NEW.Email IS NOT NULL AND NEW.Email NOT LIKE '%_@_%._%'
+        THEN RAISE(ABORT, 'Email nhà cung cấp không hợp lệ')
+      WHEN NEW.SDT IS NOT NULL AND NEW.SDT GLOB '*[^0-9+]*'
+        THEN RAISE(ABORT, 'Số điện thoại nhà cung cấp không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_NhanVien_validate_insert
+  BEFORE INSERT ON NhanVien
+  BEGIN
+    SELECT CASE
+      WHEN NEW.Email IS NOT NULL AND NEW.Email NOT LIKE '%_@_%._%'
+        THEN RAISE(ABORT, 'Email nhân viên không hợp lệ')
+      WHEN NEW.QuyenHan NOT IN ('Admin','Quản lý','Nhân viên','Kỹ thuật','Kế toán')
+        THEN RAISE(ABORT, 'Quyền hạn nhân viên không hợp lệ')
+      WHEN NEW.TrangThai NOT IN ('Đang làm việc','Tạm nghỉ','Nghỉ việc')
+        THEN RAISE(ABORT, 'Trạng thái nhân viên không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_NhanVien_validate_update
+  BEFORE UPDATE ON NhanVien
+  BEGIN
+    SELECT CASE
+      WHEN NEW.Email IS NOT NULL AND NEW.Email NOT LIKE '%_@_%._%'
+        THEN RAISE(ABORT, 'Email nhân viên không hợp lệ')
+      WHEN NEW.QuyenHan NOT IN ('Admin','Quản lý','Nhân viên','Kỹ thuật','Kế toán')
+        THEN RAISE(ABORT, 'Quyền hạn nhân viên không hợp lệ')
+      WHEN NEW.TrangThai NOT IN ('Đang làm việc','Tạm nghỉ','Nghỉ việc')
+        THEN RAISE(ABORT, 'Trạng thái nhân viên không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_KhachHang_validate_insert
+  BEFORE INSERT ON KhachHang
+  BEGIN
+    SELECT CASE
+      WHEN NEW.Email IS NOT NULL AND NEW.Email NOT LIKE '%_@_%._%'
+        THEN RAISE(ABORT, 'Email khách hàng không hợp lệ')
+      WHEN NEW.CongNoHienTai < 0
+        THEN RAISE(ABORT, 'Công nợ khách hàng không được âm')
+      WHEN NEW.TrangThai NOT IN ('Hoạt động','Tạm khóa','Ngừng hợp tác')
+        THEN RAISE(ABORT, 'Trạng thái khách hàng không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_KhachHang_validate_update
+  BEFORE UPDATE ON KhachHang
+  BEGIN
+    SELECT CASE
+      WHEN NEW.Email IS NOT NULL AND NEW.Email NOT LIKE '%_@_%._%'
+        THEN RAISE(ABORT, 'Email khách hàng không hợp lệ')
+      WHEN NEW.CongNoHienTai < 0
+        THEN RAISE(ABORT, 'Công nợ khách hàng không được âm')
+      WHEN NEW.TrangThai NOT IN ('Hoạt động','Tạm khóa','Ngừng hợp tác')
+        THEN RAISE(ABORT, 'Trạng thái khách hàng không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_ThietBi_validate_insert
+  BEFORE INSERT ON ThietBi
+  BEGIN
+    SELECT CASE
+      WHEN NEW.DonGiaThue < 0
+        THEN RAISE(ABORT, 'Đơn giá thuê không được âm')
+      WHEN NEW.SoLuongTong < 0 OR NEW.SoLuongKhaDung < 0
+        THEN RAISE(ABORT, 'Số lượng thiết bị không được âm')
+      WHEN NEW.SoLuongKhaDung > NEW.SoLuongTong
+        THEN RAISE(ABORT, 'Số lượng khả dụng không được vượt quá tổng')
+      WHEN NEW.TrangThai NOT IN ('Đang kinh doanh','Ngừng cho thuê','Thanh lý','Đã xóa')
+        THEN RAISE(ABORT, 'Trạng thái thiết bị không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_ThietBi_validate_update
+  BEFORE UPDATE ON ThietBi
+  BEGIN
+    SELECT CASE
+      WHEN NEW.DonGiaThue < 0
+        THEN RAISE(ABORT, 'Đơn giá thuê không được âm')
+      WHEN NEW.SoLuongTong < 0 OR NEW.SoLuongKhaDung < 0
+        THEN RAISE(ABORT, 'Số lượng thiết bị không được âm')
+      WHEN NEW.SoLuongKhaDung > NEW.SoLuongTong
+        THEN RAISE(ABORT, 'Số lượng khả dụng không được vượt quá tổng')
+      WHEN NEW.TrangThai NOT IN ('Đang kinh doanh','Ngừng cho thuê','Thanh lý','Đã xóa')
+        THEN RAISE(ABORT, 'Trạng thái thiết bị không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_ThietBiChiTiet_validate_insert
+  BEFORE INSERT ON ThietBiChiTiet
+  BEGIN
+    SELECT CASE
+      WHEN NEW.TinhTrang NOT IN ('Mới','Tốt','Bình thường','Cũ','Hỏng nặng')
+        THEN RAISE(ABORT, 'Tình trạng thiết bị chi tiết không hợp lệ')
+      WHEN NEW.TrangThai NOT IN ('Có sẵn','Đang mượn','Đang bảo trì','Hỏng','Mất','Thanh lý')
+        THEN RAISE(ABORT, 'Trạng thái thiết bị chi tiết không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_ThietBiChiTiet_validate_update
+  BEFORE UPDATE ON ThietBiChiTiet
+  BEGIN
+    SELECT CASE
+      WHEN NEW.TinhTrang NOT IN ('Mới','Tốt','Bình thường','Cũ','Hỏng nặng')
+        THEN RAISE(ABORT, 'Tình trạng thiết bị chi tiết không hợp lệ')
+      WHEN NEW.TrangThai NOT IN ('Có sẵn','Đang mượn','Đang bảo trì','Hỏng','Mất','Thanh lý')
+        THEN RAISE(ABORT, 'Trạng thái thiết bị chi tiết không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_YeuCauMuon_validate_insert
+  BEFORE INSERT ON YeuCauMuon
+  BEGIN
+    SELECT CASE
+      WHEN date(NEW.NgayDuKien) < date(NEW.NgayBatDau)
+        THEN RAISE(ABORT, 'Ngày dự kiến phải sau ngày bắt đầu')
+      WHEN NEW.TrangThaiYeuCau NOT IN ('Chờ duyệt','Đã duyệt','Từ chối','Đã hủy','Đã lập phiếu')
+        THEN RAISE(ABORT, 'Trạng thái yêu cầu mượn không hợp lệ')
+      WHEN NEW.TrangThaiYeuCau = 'Từ chối' AND NEW.LyDoTuChoi IS NULL
+        THEN RAISE(ABORT, 'Yêu cầu từ chối phải có lý do')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_YeuCauMuon_validate_update
+  BEFORE UPDATE ON YeuCauMuon
+  BEGIN
+    SELECT CASE
+      WHEN date(NEW.NgayDuKien) < date(NEW.NgayBatDau)
+        THEN RAISE(ABORT, 'Ngày dự kiến phải sau ngày bắt đầu')
+      WHEN NEW.TrangThaiYeuCau NOT IN ('Chờ duyệt','Đã duyệt','Từ chối','Đã hủy','Đã lập phiếu')
+        THEN RAISE(ABORT, 'Trạng thái yêu cầu mượn không hợp lệ')
+      WHEN NEW.TrangThaiYeuCau = 'Từ chối' AND NEW.LyDoTuChoi IS NULL
+        THEN RAISE(ABORT, 'Yêu cầu từ chối phải có lý do')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_PhieuMuon_validate_insert
+  BEFORE INSERT ON PhieuMuon
+  BEGIN
+    SELECT CASE
+      WHEN NEW.TongTien < 0
+        THEN RAISE(ABORT, 'Tổng tiền phiếu mượn không được âm')
+      WHEN date(NEW.NgayTraDuKien) < date(NEW.NgayMuon)
+        THEN RAISE(ABORT, 'Ngày trả dự kiến phải sau ngày mượn')
+      WHEN NEW.NgayTraThucTe IS NOT NULL AND date(NEW.NgayTraThucTe) < date(NEW.NgayMuon)
+        THEN RAISE(ABORT, 'Ngày trả thực tế phải sau ngày mượn')
+      WHEN NEW.TrangThai NOT IN ('Đang mượn','Đã trả','Quá hạn','Đã hủy','Đang thuê','Hoàn thành')
+        THEN RAISE(ABORT, 'Trạng thái phiếu mượn không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_PhieuMuon_validate_update
+  BEFORE UPDATE ON PhieuMuon
+  BEGIN
+    SELECT CASE
+      WHEN NEW.TongTien < 0
+        THEN RAISE(ABORT, 'Tổng tiền phiếu mượn không được âm')
+      WHEN date(NEW.NgayTraDuKien) < date(NEW.NgayMuon)
+        THEN RAISE(ABORT, 'Ngày trả dự kiến phải sau ngày mượn')
+      WHEN NEW.NgayTraThucTe IS NOT NULL AND date(NEW.NgayTraThucTe) < date(NEW.NgayMuon)
+        THEN RAISE(ABORT, 'Ngày trả thực tế phải sau ngày mượn')
+      WHEN NEW.TrangThai NOT IN ('Đang mượn','Đã trả','Quá hạn','Đã hủy','Đang thuê','Hoàn thành')
+        THEN RAISE(ABORT, 'Trạng thái phiếu mượn không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_ChiTietPM_validate_insert
+  BEFORE INSERT ON ChiTietPM
+  BEGIN
+    SELECT CASE
+      WHEN NEW.SoLuong <= 0
+        THEN RAISE(ABORT, 'Số lượng chi tiết phiếu mượn phải lớn hơn 0')
+      WHEN NEW.DonGiaTaiThoiDiem < 0 OR NEW.PhiBoiThuong < 0
+        THEN RAISE(ABORT, 'Đơn giá và phí bồi thường không được âm')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_ChiTietPM_validate_update
+  BEFORE UPDATE ON ChiTietPM
+  BEGIN
+    SELECT CASE
+      WHEN NEW.SoLuong <= 0
+        THEN RAISE(ABORT, 'Số lượng chi tiết phiếu mượn phải lớn hơn 0')
+      WHEN NEW.DonGiaTaiThoiDiem < 0 OR NEW.PhiBoiThuong < 0
+        THEN RAISE(ABORT, 'Đơn giá và phí bồi thường không được âm')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_ThanhToan_validate_insert
+  BEFORE INSERT ON ThanhToan
+  BEGIN
+    SELECT CASE
+      WHEN NEW.SoTien < 0
+        THEN RAISE(ABORT, 'Số tiền thanh toán không được âm')
+      WHEN NEW.PhuongThuc NOT IN ('Tiền mặt','Chuyển khoản','Thẻ','Ví điện tử')
+        THEN RAISE(ABORT, 'Phương thức thanh toán không hợp lệ')
+      WHEN NEW.LoaiThanhToan NOT IN ('Tiền thuê','Đặt cọc','Phụ phí','Bồi thường','Hoàn tiền')
+        THEN RAISE(ABORT, 'Loại thanh toán không hợp lệ')
+      WHEN NEW.TrangThai NOT IN ('Chờ thanh toán','Đã thanh toán','Thất bại','Đã hoàn tiền')
+        THEN RAISE(ABORT, 'Trạng thái thanh toán không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_ThanhToan_validate_update
+  BEFORE UPDATE ON ThanhToan
+  BEGIN
+    SELECT CASE
+      WHEN NEW.SoTien < 0
+        THEN RAISE(ABORT, 'Số tiền thanh toán không được âm')
+      WHEN NEW.PhuongThuc NOT IN ('Tiền mặt','Chuyển khoản','Thẻ','Ví điện tử')
+        THEN RAISE(ABORT, 'Phương thức thanh toán không hợp lệ')
+      WHEN NEW.LoaiThanhToan NOT IN ('Tiền thuê','Đặt cọc','Phụ phí','Bồi thường','Hoàn tiền')
+        THEN RAISE(ABORT, 'Loại thanh toán không hợp lệ')
+      WHEN NEW.TrangThai NOT IN ('Chờ thanh toán','Đã thanh toán','Thất bại','Đã hoàn tiền')
+        THEN RAISE(ABORT, 'Trạng thái thanh toán không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_GiaHanMuon_validate_insert
+  BEFORE INSERT ON GiaHanMuon
+  BEGIN
+    SELECT CASE
+      WHEN date(NEW.NgayTraMoi) <= date(NEW.NgayTraCu)
+        THEN RAISE(ABORT, 'Ngày trả mới phải sau ngày trả cũ')
+      WHEN NEW.TrangThaiGiaHan NOT IN ('Chờ duyệt','Đã duyệt','Từ chối','Đã hủy')
+        THEN RAISE(ABORT, 'Trạng thái gia hạn không hợp lệ')
+      WHEN NEW.TrangThaiGiaHan = 'Từ chối' AND NEW.LyDoTuChoi IS NULL
+        THEN RAISE(ABORT, 'Gia hạn từ chối phải có lý do')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_GiaHanMuon_validate_update
+  BEFORE UPDATE ON GiaHanMuon
+  BEGIN
+    SELECT CASE
+      WHEN date(NEW.NgayTraMoi) <= date(NEW.NgayTraCu)
+        THEN RAISE(ABORT, 'Ngày trả mới phải sau ngày trả cũ')
+      WHEN NEW.TrangThaiGiaHan NOT IN ('Chờ duyệt','Đã duyệt','Từ chối','Đã hủy')
+        THEN RAISE(ABORT, 'Trạng thái gia hạn không hợp lệ')
+      WHEN NEW.TrangThaiGiaHan = 'Từ chối' AND NEW.LyDoTuChoi IS NULL
+        THEN RAISE(ABORT, 'Gia hạn từ chối phải có lý do')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_PhuPhiViPham_validate_insert
+  BEFORE INSERT ON PhuPhiViPham
+  BEGIN
+    SELECT CASE
+      WHEN NEW.SoTien < 0
+        THEN RAISE(ABORT, 'Phụ phí vi phạm không được âm')
+      WHEN NEW.LoaiViPham NOT IN ('Trễ hạn','Hư hỏng','Mất thiết bị','Vệ sinh','Khác')
+        THEN RAISE(ABORT, 'Loại vi phạm không hợp lệ')
+      WHEN NEW.TrangThaiXL NOT IN ('Chưa xử lý','Đã lập biên bản','Đã thu phí','Đã hủy')
+        THEN RAISE(ABORT, 'Trạng thái xử lý vi phạm không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_PhuPhiViPham_validate_update
+  BEFORE UPDATE ON PhuPhiViPham
+  BEGIN
+    SELECT CASE
+      WHEN NEW.SoTien < 0
+        THEN RAISE(ABORT, 'Phụ phí vi phạm không được âm')
+      WHEN NEW.LoaiViPham NOT IN ('Trễ hạn','Hư hỏng','Mất thiết bị','Vệ sinh','Khác')
+        THEN RAISE(ABORT, 'Loại vi phạm không hợp lệ')
+      WHEN NEW.TrangThaiXL NOT IN ('Chưa xử lý','Đã lập biên bản','Đã thu phí','Đã hủy')
+        THEN RAISE(ABORT, 'Trạng thái xử lý vi phạm không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_BaoTri_validate_insert
+  BEFORE INSERT ON BaoTri
+  BEGIN
+    SELECT CASE
+      WHEN NEW.MucDoHuHong NOT IN ('Nhẹ','Trung bình','Nặng','Rất nặng')
+        THEN RAISE(ABORT, 'Mức độ hư hỏng không hợp lệ')
+      WHEN NEW.TrangThai NOT IN ('Chờ tiếp nhận','Đang xử lý','Hoàn thành','Từ chối')
+        THEN RAISE(ABORT, 'Trạng thái bảo trì không hợp lệ')
+      WHEN NEW.ChiPhi < 0
+        THEN RAISE(ABORT, 'Chi phí bảo trì không được âm')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_BaoTri_validate_update
+  BEFORE UPDATE ON BaoTri
+  BEGIN
+    SELECT CASE
+      WHEN NEW.MucDoHuHong NOT IN ('Nhẹ','Trung bình','Nặng','Rất nặng')
+        THEN RAISE(ABORT, 'Mức độ hư hỏng không hợp lệ')
+      WHEN NEW.TrangThai NOT IN ('Chờ tiếp nhận','Đang xử lý','Hoàn thành','Từ chối')
+        THEN RAISE(ABORT, 'Trạng thái bảo trì không hợp lệ')
+      WHEN NEW.ChiPhi < 0
+        THEN RAISE(ABORT, 'Chi phí bảo trì không được âm')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_BaoCao_validate_insert
+  BEFORE INSERT ON BaoCao
+  BEGIN
+    SELECT CASE
+      WHEN date(NEW.DenNgay) < date(NEW.TuNgay)
+        THEN RAISE(ABORT, 'Ngày kết thúc báo cáo phải sau ngày bắt đầu')
+      WHEN NEW.LoaiBaoCao NOT IN ('Doanh thu','Thiết bị','Bảo trì','Khách hàng','Tổng hợp')
+        THEN RAISE(ABORT, 'Loại báo cáo không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_BaoCao_validate_update
+  BEFORE UPDATE ON BaoCao
+  BEGIN
+    SELECT CASE
+      WHEN date(NEW.DenNgay) < date(NEW.TuNgay)
+        THEN RAISE(ABORT, 'Ngày kết thúc báo cáo phải sau ngày bắt đầu')
+      WHEN NEW.LoaiBaoCao NOT IN ('Doanh thu','Thiết bị','Bảo trì','Khách hàng','Tổng hợp')
+        THEN RAISE(ABORT, 'Loại báo cáo không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_AppUsers_validate_insert
+  BEFORE INSERT ON AppUsers
+  BEGIN
+    SELECT CASE
+      WHEN NEW.RoleId NOT IN ('requester','approver','company_staff','technician','unit_manager','admin')
+        THEN RAISE(ABORT, 'Vai trò tài khoản không hợp lệ')
+      WHEN NEW.Email IS NULL AND NEW.Phone IS NULL
+        THEN RAISE(ABORT, 'Tài khoản phải có email hoặc số điện thoại')
+      WHEN NEW.MaNV IS NOT NULL AND NEW.MaKH IS NOT NULL
+        THEN RAISE(ABORT, 'Tài khoản chỉ được liên kết nhân viên hoặc khách hàng')
+      WHEN NEW.IsActive NOT IN (0, 1)
+        THEN RAISE(ABORT, 'Trạng thái kích hoạt tài khoản không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_AppUsers_validate_update
+  BEFORE UPDATE ON AppUsers
+  BEGIN
+    SELECT CASE
+      WHEN NEW.RoleId NOT IN ('requester','approver','company_staff','technician','unit_manager','admin')
+        THEN RAISE(ABORT, 'Vai trò tài khoản không hợp lệ')
+      WHEN NEW.Email IS NULL AND NEW.Phone IS NULL
+        THEN RAISE(ABORT, 'Tài khoản phải có email hoặc số điện thoại')
+      WHEN NEW.MaNV IS NOT NULL AND NEW.MaKH IS NOT NULL
+        THEN RAISE(ABORT, 'Tài khoản chỉ được liên kết nhân viên hoặc khách hàng')
+      WHEN NEW.IsActive NOT IN (0, 1)
+        THEN RAISE(ABORT, 'Trạng thái kích hoạt tài khoản không hợp lệ')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_AppMaintenanceRequests_validate_insert
+  BEFORE INSERT ON AppMaintenanceRequests
+  BEGIN
+    SELECT CASE
+      WHEN NEW.Status NOT IN ('pending','approved','in_progress','completed','rejected','suspended')
+        THEN RAISE(ABORT, 'Trạng thái yêu cầu bảo trì app không hợp lệ')
+      WHEN NEW.Priority NOT IN ('low','medium','high','critical')
+        THEN RAISE(ABORT, 'Mức ưu tiên bảo trì không hợp lệ')
+      WHEN length(trim(NEW.Description)) < 10
+        THEN RAISE(ABORT, 'Mô tả bảo trì phải có ít nhất 10 ký tự')
+      WHEN NEW.Status = 'rejected' AND NEW.RejectionReason IS NULL
+        THEN RAISE(ABORT, 'Yêu cầu bị từ chối phải có lý do')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_AppMaintenanceRequests_validate_update
+  BEFORE UPDATE ON AppMaintenanceRequests
+  BEGIN
+    SELECT CASE
+      WHEN NEW.Status NOT IN ('pending','approved','in_progress','completed','rejected','suspended')
+        THEN RAISE(ABORT, 'Trạng thái yêu cầu bảo trì app không hợp lệ')
+      WHEN NEW.Priority NOT IN ('low','medium','high','critical')
+        THEN RAISE(ABORT, 'Mức ưu tiên bảo trì không hợp lệ')
+      WHEN length(trim(NEW.Description)) < 10
+        THEN RAISE(ABORT, 'Mô tả bảo trì phải có ít nhất 10 ký tự')
+      WHEN NEW.Status = 'rejected' AND NEW.RejectionReason IS NULL
+        THEN RAISE(ABORT, 'Yêu cầu bị từ chối phải có lý do')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_AppMaintenanceTasks_validate_insert
+  BEFORE INSERT ON AppMaintenanceTasks
+  BEGIN
+    SELECT CASE
+      WHEN NEW.Status NOT IN ('pending','in_progress','completed','cancelled')
+        THEN RAISE(ABORT, 'Trạng thái công việc bảo trì không hợp lệ')
+      WHEN NEW.Progress < 0 OR NEW.Progress > 100
+        THEN RAISE(ABORT, 'Tiến độ bảo trì phải từ 0 đến 100')
+      WHEN NEW.Cost IS NOT NULL AND NEW.Cost < 0
+        THEN RAISE(ABORT, 'Chi phí công việc bảo trì không được âm')
+    END;
+  END
+  ''',
+  '''
+  CREATE TRIGGER IF NOT EXISTS trg_AppMaintenanceTasks_validate_update
+  BEFORE UPDATE ON AppMaintenanceTasks
+  BEGIN
+    SELECT CASE
+      WHEN NEW.Status NOT IN ('pending','in_progress','completed','cancelled')
+        THEN RAISE(ABORT, 'Trạng thái công việc bảo trì không hợp lệ')
+      WHEN NEW.Progress < 0 OR NEW.Progress > 100
+        THEN RAISE(ABORT, 'Tiến độ bảo trì phải từ 0 đến 100')
+      WHEN NEW.Cost IS NOT NULL AND NEW.Cost < 0
+        THEN RAISE(ABORT, 'Chi phí công việc bảo trì không được âm')
+    END;
+  END
+  ''',
+];
+
+const List<String> _realisticSeedStatements = [
+  '''
+  INSERT OR IGNORE INTO KhachHang
+  (MaKH, HoTen, SDT, Email, CCCD, DiaChi, CongNoHienTai, TrangThai) VALUES
+  ('KH011','Trường Đại học Công Thương TP.HCM','0920000011','dhct@khachhang.vn','030100000011','140 Lê Trọng Tấn, Tân Phú, TP.HCM',0,'Hoạt động'),
+  ('KH012','Trường Cao đẳng Kỹ thuật Cao Thắng','0920000012','caothang@khachhang.vn','030100000012','65 Huỳnh Thúc Kháng, Quận 1, TP.HCM',0,'Hoạt động'),
+  ('KH013','Công ty Tổ chức Sự kiện BlueSky','0920000013','bluesky.event@khachhang.vn','030100000013','18 Nguyễn Gia Trí, Bình Thạnh, TP.HCM',850000,'Hoạt động'),
+  ('KH014','Trung tâm Hội nghị Hoa Sen','0920000014','hoasen.center@khachhang.vn','030100000014','9 Phan Đăng Lưu, Phú Nhuận, TP.HCM',0,'Hoạt động'),
+  ('KH015','Studio Media Ánh Dương','0920000015','anhduong.media@khachhang.vn','030100000015','27 Cách Mạng Tháng 8, Quận 3, TP.HCM',1200000,'Tạm khóa'),
+  ('KH016','Công ty TNHH Giáo dục STEM Việt','0920000016','stemviet@khachhang.vn','030100000016','42 Nguyễn Thị Minh Khai, Quận 1, TP.HCM',0,'Hoạt động'),
+  ('KH017','Nhà Văn hóa Thanh Niên Quận 7','0920000017','nvhtnq7@khachhang.vn','030100000017','201 Nguyễn Thị Thập, Quận 7, TP.HCM',0,'Hoạt động'),
+  ('KH018','Phòng Đào tạo Doanh nghiệp Mekong','0920000018','mekong.training@khachhang.vn','030100000018','33 Võ Văn Kiệt, Ninh Kiều, Cần Thơ',300000,'Hoạt động'),
+  ('KH019','Câu lạc bộ Nhiếp ảnh LensArt','0920000019','lensart.club@khachhang.vn','030100000019','12 Trần Phú, Hải Châu, Đà Nẵng',0,'Hoạt động'),
+  ('KH020','Công ty Truyền thông Nam Việt','0920000020','namviet.media@khachhang.vn','030100000020','88 Lý Thường Kiệt, Hoàn Kiếm, Hà Nội',0,'Ngừng hợp tác')
+  ''',
+  '''
+  INSERT OR IGNORE INTO AppUsers
+  (Id,Email,Phone,FullName,RoleId,UnitId,PasswordSalt,PasswordHash,IsActive,MaNV,MaKH) VALUES
+  ('USR-KH002','lequydon@gmail.com','0902222222','THPT Lê Quý Đôn','requester','UNIT-KH','APP-USR-KH002','123456',1,NULL,'KH002'),
+  ('USR-KH003','thcstranhungdao@gmail.com','0903333333','THCS Trần Hưng Đạo','requester','UNIT-KH','APP-USR-KH003','123456',1,NULL,'KH003'),
+  ('USR-KH004','abc@gmail.com','0904444444','Công ty ABC','requester','UNIT-KH','APP-USR-KH004','123456',1,NULL,'KH004'),
+  ('USR-KH005','minhphat@gmail.com','0905555555','Công ty Minh Phát','requester','UNIT-KH','APP-USR-KH005','123456',1,NULL,'KH005'),
+  ('USR-KH006','future@gmail.com','0906666666','Trung tâm Anh ngữ Future','requester','UNIT-KH','APP-USR-KH006','123456',1,NULL,'KH006'),
+  ('USR-KH007','saoviet@gmail.com','0907777777','Trung tâm Tin học Sao Việt','requester','UNIT-KH','APP-USR-KH007','123456',1,NULL,'KH007'),
+  ('USR-KH008','melody@gmail.com','0908888888','Quán Cafe Melody','requester','UNIT-KH','APP-USR-KH008','123456',1,NULL,'KH008'),
+  ('USR-KH009','trithuc@gmail.com','0909999999','Nhà sách Tri Thức','requester','UNIT-KH','APP-USR-KH009','123456',1,NULL,'KH009'),
+  ('USR-KH010','vantai@gmail.com','0911111111','Nguyễn Văn Tài','requester','UNIT-KH','APP-USR-KH010','123456',1,NULL,'KH010'),
+  ('USR-KH011','dhct@khachhang.vn','0920000011','Trường Đại học Công Thương TP.HCM','requester','UNIT-KH','APP-USR-KH011','123456',1,NULL,'KH011'),
+  ('USR-KH012','caothang@khachhang.vn','0920000012','Trường Cao đẳng Kỹ thuật Cao Thắng','requester','UNIT-KH','APP-USR-KH012','123456',1,NULL,'KH012'),
+  ('USR-KH013','bluesky.event@khachhang.vn','0920000013','Công ty Tổ chức Sự kiện BlueSky','requester','UNIT-KH','APP-USR-KH013','123456',1,NULL,'KH013'),
+  ('USR-KH014','hoasen.center@khachhang.vn','0920000014','Trung tâm Hội nghị Hoa Sen','requester','UNIT-KH','APP-USR-KH014','123456',1,NULL,'KH014'),
+  ('USR-KH015','anhduong.media@khachhang.vn','0920000015','Studio Media Ánh Dương','requester','UNIT-KH','APP-USR-KH015','123456',1,NULL,'KH015'),
+  ('USR-KH016','stemviet@khachhang.vn','0920000016','Công ty TNHH Giáo dục STEM Việt','requester','UNIT-KH','APP-USR-KH016','123456',1,NULL,'KH016'),
+  ('USR-KH017','nvhtnq7@khachhang.vn','0920000017','Nhà Văn hóa Thanh Niên Quận 7','requester','UNIT-KH','APP-USR-KH017','123456',1,NULL,'KH017'),
+  ('USR-KH018','mekong.training@khachhang.vn','0920000018','Phòng Đào tạo Doanh nghiệp Mekong','requester','UNIT-KH','APP-USR-KH018','123456',1,NULL,'KH018'),
+  ('USR-KH019','lensart.club@khachhang.vn','0920000019','Câu lạc bộ Nhiếp ảnh LensArt','requester','UNIT-KH','APP-USR-KH019','123456',1,NULL,'KH019'),
+  ('USR-KH020','namviet.media@khachhang.vn','0920000020','Công ty Truyền thông Nam Việt','requester','UNIT-KH','APP-USR-KH020','123456',1,NULL,'KH020')
+  ''',
+  '''
+  INSERT OR IGNORE INTO AppMaintenanceRequests
+  (Id,DeviceId,RequesterId,Status,Priority,Description,RejectionReason,TechnicianId,ApproverId,CompletionDate,CreatedAt,UpdatedAt) VALUES
+  ('MR001','TBCT001','USR-CUSTOMER','pending','high','Máy chiếu bị mờ hình và quạt tản nhiệt kêu lớn khi sử dụng.',NULL,NULL,NULL,NULL,'2026-06-15 08:30:00','2026-06-15 08:30:00'),
+  ('MR002','TBCT007','USR-KH002','approved','medium','Laptop khởi động chậm, cần kiểm tra ổ cứng và phần mềm lớp tập huấn.',NULL,'USR-TECH','USR-MANAGER',NULL,'2026-06-14 10:15:00','2026-06-14 11:00:00'),
+  ('MR003','TBCT010','USR-KH002','in_progress','critical','Laptop thường xuyên tắt nguồn khi đang trình chiếu bài giảng.',NULL,'USR-TECH-NV004','USR-MANAGER',NULL,'2026-06-13 09:00:00','2026-06-13 14:30:00'),
+  ('MR004','TBCT023','USR-KH004','completed','low','Camera bị trầy vỏ ngoài sau sự kiện, cần vệ sinh và kiểm tra hình ảnh.',NULL,'USR-TECH-NV007','USR-MANAGER','2026-06-12 16:45:00','2026-06-12 08:00:00','2026-06-12 16:45:00'),
+  ('MR005','TBCT025','USR-KH006','rejected','medium','Router không thuộc phạm vi bảo trì do khách tự thay adapter khác.', 'Thiết bị dùng sai phụ kiện ngoài biên bản bàn giao',NULL,'USR-MANAGER',NULL,'2026-06-11 13:20:00','2026-06-11 14:00:00')
+  ''',
+  '''
+  INSERT OR IGNORE INTO AppMaintenanceTasks
+  (Id,RequestId,Status,Description,Result,Notes,TechnicianId,Cost,CompletionDate,Progress,CreatedAt,UpdatedAt) VALUES
+  ('TASK-MR002','MR002','pending','Kiểm tra laptop khởi động chậm',NULL,NULL,'USR-TECH',NULL,NULL,0,'2026-06-14 11:05:00','2026-06-14 11:05:00'),
+  ('TASK-MR003','MR003','in_progress','Kiểm tra lỗi nguồn laptop','Đang kiểm tra adapter và pin','Ưu tiên xử lý trước buổi học chiều','USR-TECH-NV004',0,NULL,45,'2026-06-13 14:35:00','2026-06-13 15:10:00'),
+  ('TASK-MR004','MR004','completed','Vệ sinh và kiểm tra camera','Đã vệ sinh ống kính, hình ảnh ổn định','Vỏ ngoài trầy nhẹ không ảnh hưởng vận hành','USR-TECH-NV007',50000,'2026-06-12 16:45:00',100,'2026-06-12 09:00:00','2026-06-12 16:45:00')
+  ''',
+  '''
+  INSERT OR IGNORE INTO AppStatusHistory
+  (Id,RequestId,PreviousStatus,NewStatus,ChangedBy,Reason,CreatedAt) VALUES
+  ('HIS-MR001-01','MR001','new','pending','USR-CUSTOMER','Khách hàng tạo yêu cầu bảo trì','2026-06-15 08:30:00'),
+  ('HIS-MR002-01','MR002','new','pending','USR-KH002','Khách hàng tạo yêu cầu bảo trì','2026-06-14 10:15:00'),
+  ('HIS-MR002-02','MR002','pending','approved','USR-MANAGER','Quản lý xác nhận yêu cầu hợp lệ','2026-06-14 11:00:00'),
+  ('HIS-MR003-01','MR003','pending','approved','USR-MANAGER','Duyệt xử lý khẩn cấp','2026-06-13 10:00:00'),
+  ('HIS-MR003-02','MR003','approved','in_progress','USR-TECH-NV004','Kỹ thuật viên bắt đầu sửa chữa','2026-06-13 14:30:00'),
+  ('HIS-MR004-01','MR004','in_progress','completed','USR-TECH-NV007','Hoàn tất vệ sinh và kiểm tra camera','2026-06-12 16:45:00'),
+  ('HIS-MR005-01','MR005','pending','rejected','USR-MANAGER','Thiết bị dùng sai phụ kiện ngoài biên bản bàn giao','2026-06-11 14:00:00')
+  ''',
+  '''
+  INSERT OR IGNORE INTO AppNotifications
+  (Id,UserId,Title,Message,RequestId,Type,IsRead,CreatedAt) VALUES
+  ('NOT-MR002-01','USR-TECH','Bạn được phân công sửa chữa thiết bị','Kiểm tra laptop khởi động chậm cho THPT Lê Quý Đôn.','MR002','maintenance_assignment',0,'2026-06-14 11:05:00'),
+  ('NOT-MR003-01','USR-TECH-NV004','Công việc bảo trì khẩn cấp','Laptop tắt nguồn khi trình chiếu, cần xử lý trong ngày.','MR003','maintenance_assignment',0,'2026-06-13 14:35:00'),
+  ('NOT-MR004-01','USR-KH004','Thiết bị đã sửa chữa xong','Camera đã được vệ sinh và kiểm tra hình ảnh ổn định.','MR004','maintenance_completed',1,'2026-06-12 16:45:00'),
+  ('NOT-MR005-01','USR-KH006','Yêu cầu bảo trì bị từ chối','Thiết bị dùng sai phụ kiện ngoài biên bản bàn giao.','MR005','maintenance_review',0,'2026-06-11 14:00:00')
+  ''',
+  '''
+  INSERT OR IGNORE INTO AppUserPreferences
+  (UserId,ThemeMode,Language,NotificationSettings) VALUES
+  ('USR-ADMIN','system','vi','{"email":true,"push":true}'),
+  ('USR-MANAGER','light','vi','{"email":true,"push":true}'),
+  ('USR-TECH','system','vi','{"email":false,"push":true}'),
+  ('USR-CUSTOMER','system','vi','{"email":true,"push":false}')
+  ''',
+];
+
+const List<String> _externalImportStatements = [
+  '''
+  INSERT OR IGNORE INTO LoaiThietBi (MaLoai, TenLoai, MoTa)
+  SELECT
+    'EXT-' || MaLoai,
+    TenLoai || ' (nguồn ngoài)',
+    COALESCE(MoTa, 'Dữ liệu nhập từ quan_ly_muon_tra_thiet_bi.sqlite')
+  FROM external_source.LoaiThietBi
+  ''',
+  '''
+  INSERT OR IGNORE INTO NhaCungCap (MaNCC, TenNCC, DiaChi, SDT, Email)
+  SELECT
+    'EXT-' || MaNCC,
+    TenNCC || ' (nguồn ngoài)',
+    DiaChi,
+    SDT,
+    Email
+  FROM external_source.NhaCungCap
+  ''',
+  '''
+  INSERT OR IGNORE INTO NhanVien
+    (MaNV, TenNV, ChucVu, QuyenHan, SDT, Email, MatKhau, TrangThai)
+  SELECT
+    'EXT-' || MaNV,
+    TenNV,
+    COALESCE(NULLIF(ChucVu, ''), 'Nhân viên'),
+    CASE QuyenHan
+      WHEN 'quan_tri' THEN 'Admin'
+      WHEN 'quan_ly' THEN 'Quản lý'
+      ELSE 'Nhân viên'
+    END,
+    NULL,
+    'ext-' || lower(MaNV) || '@external.local',
+    '123456',
+    'Đang làm việc'
+  FROM external_source.NhanVien
+  ''',
+  '''
+  INSERT OR IGNORE INTO KhachHang
+    (MaKH, HoTen, SDT, Email, CCCD, DiaChi, CongNoHienTai, TrangThai)
+  SELECT
+    'EXT-' || MaKH,
+    HoTen,
+    SDT,
+    Email,
+    CCCD,
+    DiaChi,
+    CongNo,
+    'Hoạt động'
+  FROM external_source.KhachHang
+  ''',
+  '''
+  INSERT OR IGNORE INTO ThietBi
+    (MaTB, TenTB, DonGiaThue, SoLuongTong, SoLuongKhaDung,
+     MoTaKyThuat, HinhAnh, MaLoai, MaNCC, TrangThai)
+  SELECT
+    'EXT-' || MaTB,
+    TenTB,
+    DonGiaThue,
+    SoLuongTong,
+    SoLuongKhaDung,
+    MoTaThuat,
+    NULLIF(HinhAnh, ''),
+    'EXT-' || MaLoai,
+    'EXT-' || MaNCC,
+    CASE TrangThai
+      WHEN 'hong' THEN 'Thanh lý'
+      WHEN 'ngung_su_dung' THEN 'Ngừng cho thuê'
+      ELSE 'Đang kinh doanh'
+    END
+  FROM external_source.ThietBi
+  ''',
+  '''
+  INSERT OR IGNORE INTO ThietBiChiTiet
+    (MaTBCT, SoSeri, NgayNhap, TinhTrang, TrangThai, MaTB, GhiChu)
+  WITH RECURSIVE seq(n) AS (
+    SELECT 1
+    UNION ALL
+    SELECT n + 1 FROM seq WHERE n < 200
+  )
+  SELECT
+    'EXT-' || tb.MaTB || '-' || printf('%03d', seq.n),
+    'EXT-' || tb.MaTB || '-' || printf('%03d', seq.n),
+    date('now'),
+    'Tốt',
+    CASE tb.TrangThai
+      WHEN 'dang_muon' THEN 'Đang mượn'
+      WHEN 'bao_tri' THEN 'Đang bảo trì'
+      WHEN 'hong' THEN 'Hỏng'
+      WHEN 'ngung_su_dung' THEN 'Thanh lý'
+      ELSE 'Có sẵn'
+    END,
+    'EXT-' || tb.MaTB,
+    'Tự tạo từ số lượng tổng của database nguồn'
+  FROM external_source.ThietBi tb
+  JOIN seq ON seq.n <= tb.SoLuongTong
+  ''',
+  '''
+  INSERT OR IGNORE INTO AppUsers
+    (Id, Email, Phone, FullName, RoleId, UnitId, PasswordSalt,
+     PasswordHash, IsActive, MaNV, MaKH)
+  SELECT
+    'EXT-USR-' || MaNV,
+    'ext-' || lower(MaNV) || '@external.local',
+    NULL,
+    TenNV,
+    CASE QuyenHan
+      WHEN 'quan_tri' THEN 'admin'
+      WHEN 'quan_ly' THEN 'unit_manager'
+      ELSE 'company_staff'
+    END,
+    'UNIT01',
+    'EXT-USR-' || MaNV,
+    '123456',
+    1,
+    'EXT-' || MaNV,
+    NULL
+  FROM external_source.NhanVien
+  ''',
+  '''
+  INSERT OR IGNORE INTO AppUsers
+    (Id, Email, Phone, FullName, RoleId, UnitId, PasswordSalt,
+     PasswordHash, IsActive, MaNV, MaKH)
+  SELECT
+    'EXT-USR-' || MaKH,
+    Email,
+    SDT,
+    HoTen,
+    'requester',
+    'UNIT-KH',
+    'EXT-USR-' || MaKH,
+    '123456',
+    1,
+    NULL,
+    'EXT-' || MaKH
+  FROM external_source.KhachHang
+  ''',
+  '''
+  INSERT OR IGNORE INTO YeuCauMuon
+    (MaYC, NgayYeuCau, NgayBatDau, NgayDuKien, MucDichSuDung,
+     TrangThaiYeuCau, LyDoTuChoi, MaKH, MaNV, NgayDuyet)
+  SELECT
+    'EXT-' || MaYCM,
+    NgayYeuCau,
+    NgayBatDau,
+    NgayTraDuKien,
+    COALESCE(NULLIF(MucDichSuDung, ''), 'Nhập từ database nguồn'),
+    CASE TrangThaiYeuCau
+      WHEN 'da_duyet' THEN 'Đã duyệt'
+      WHEN 'tu_choi' THEN 'Từ chối'
+      WHEN 'da_lap_phieu' THEN 'Đã lập phiếu'
+      WHEN 'huy' THEN 'Đã hủy'
+      ELSE 'Chờ duyệt'
+    END,
+    LyDoTuChoi,
+    'EXT-' || MaKH,
+    CASE WHEN MaNV IS NULL THEN NULL ELSE 'EXT-' || MaNV END,
+    NULL
+  FROM external_source.YeuCauMuon
+  ''',
+  '''
+  INSERT OR IGNORE INTO PhieuMuon
+    (MaPM, NgayMuon, NgayTraDuKien, NgayTraThucTe, TongTien,
+     TrangThai, MaKH, MaNV, MaYC, GhiChu)
+  SELECT
+    'EXT-' || MaPM,
+    NgayMuon,
+    NgayTraDuKien,
+    NgayTraThucTe,
+    TongTien,
+    CASE TrangThai
+      WHEN 'da_tra' THEN 'Đã trả'
+      WHEN 'qua_han' THEN 'Quá hạn'
+      WHEN 'huy' THEN 'Đã hủy'
+      ELSE 'Đang mượn'
+    END,
+    'EXT-' || MaKH,
+    CASE WHEN MaNV IS NULL THEN 'EXT-NV002' ELSE 'EXT-' || MaNV END,
+    CASE WHEN MaYCM IS NULL THEN NULL ELSE 'EXT-' || MaYCM END,
+    'Nhập từ database nguồn'
+  FROM external_source.PhieuMuon
+  ''',
+  '''
+  INSERT OR IGNORE INTO ChiTietPM
+    (MaCTPM, MaPM, MaTBCT, SoLuong, DonGiaTaiThoiDiem,
+     TinhTrangKhiGiao, TinhTrangKhiTra, PhiBoiThuong)
+  SELECT
+    'EXT-' || MaPM || '-' || MaTB,
+    'EXT-' || MaPM,
+    'EXT-' || MaTB || '-001',
+    SoLuong,
+    DonGiaTaiThoiDiem,
+    COALESCE(TinhTrangKhiGiao, 'Theo biên bản nguồn'),
+    TinhTrangKhiTra,
+    PhiBoiThuong
+  FROM external_source.ChiTietPM
+  ''',
+  '''
+  INSERT OR IGNORE INTO BaoTri
+    (MaBT, NgayYeuCau, MoTaSuCo, MucDoHuHong, TrangThai,
+     KetQuaXuLy, MaTBCT, MaKH, MaNV, NgayHoanThanh, ChiPhi)
+  SELECT
+    'EXT-' || MaBT,
+    NgayYeuCau,
+    MoTaSuCo,
+    CASE MucDoHuHong
+      WHEN 'trung_binh' THEN 'Trung bình'
+      WHEN 'nang' THEN 'Nặng'
+      ELSE 'Nhẹ'
+    END,
+    CASE TrangThai
+      WHEN 'dang_xu_ly' THEN 'Đang xử lý'
+      WHEN 'da_xu_ly' THEN 'Hoàn thành'
+      WHEN 'huy' THEN 'Từ chối'
+      ELSE 'Chờ tiếp nhận'
+    END,
+    KetQuaXuLy,
+    'EXT-' || MaTB || '-001',
+    CASE WHEN MaKH IS NULL THEN NULL ELSE 'EXT-' || MaKH END,
+    CASE WHEN MaNV IS NULL THEN NULL ELSE 'EXT-' || MaNV END,
+    NULL,
+    0
+  FROM external_source.BaoTri
+  ''',
+  '''
+  INSERT OR IGNORE INTO PhuPhiViPham
+    (MaPP, LoaiViPham, MoTa, SoTien, NgayGhiNhan, TrangThaiXL, MaPM)
+  SELECT
+    'EXT-' || MaPVP,
+    'Khác',
+    COALESCE(MoTa, LoaiViPham),
+    SoTienPhat,
+    NgayGhiNhan,
+    CASE TrangThaiXuLy
+      WHEN 'da_xu_ly' THEN 'Đã thu phí'
+      WHEN 'huy' THEN 'Đã hủy'
+      ELSE 'Chưa xử lý'
+    END,
+    'EXT-' || MaPM
+  FROM external_source.PhieuViPham
+  ''',
+  '''
+  INSERT OR IGNORE INTO ThanhToan
+    (MaTT, NgayThanhToan, SoTien, PhuongThuc, LoaiThanhToan,
+     TrangThai, MaPM, GhiChu)
+  SELECT
+    'EXT-' || MaTT,
+    NgayThanhToan,
+    SoTien,
+    CASE PhuongThuc
+      WHEN 'chuyen_khoan' THEN 'Chuyển khoản'
+      WHEN 'the' THEN 'Thẻ'
+      WHEN 'vi_dien_tu' THEN 'Ví điện tử'
+      ELSE 'Tiền mặt'
+    END,
+    CASE LoaiThanhToan
+      WHEN 'tien_phat' THEN 'Phụ phí'
+      WHEN 'boi_thuong' THEN 'Bồi thường'
+      WHEN 'dat_coc' THEN 'Đặt cọc'
+      ELSE 'Tiền thuê'
+    END,
+    CASE TrangThai
+      WHEN 'cho_thanh_toan' THEN 'Chờ thanh toán'
+      WHEN 'that_bai' THEN 'Thất bại'
+      WHEN 'huy' THEN 'Thất bại'
+      ELSE 'Đã thanh toán'
+    END,
+    'EXT-' || MaPM,
+    'Nhập từ database nguồn'
+  FROM external_source.ThanhToan
+  ''',
+  '''
+  INSERT OR IGNORE INTO GiaHanMuon
+    (MaGH, NgayYeuCau, NgayTraCu, NgayTraMoi, TrangThaiGiaHan,
+     LyDoGiaHan, LyDoTuChoi, MaPM, MaNV, NgayDuyet)
+  SELECT
+    'EXT-' || MaGH,
+    NgayYeuCau,
+    NgayTraCu,
+    NgayTraMoi,
+    CASE TrangThaiGiaHan
+      WHEN 'da_duyet' THEN 'Đã duyệt'
+      WHEN 'tu_choi' THEN 'Từ chối'
+      WHEN 'huy' THEN 'Đã hủy'
+      ELSE 'Chờ duyệt'
+    END,
+    COALESCE(NULLIF(LyDoGiaHan, ''), 'Nhập từ database nguồn'),
+    NULL,
+    'EXT-' || MaPM,
+    CASE WHEN MaNV IS NULL THEN NULL ELSE 'EXT-' || MaNV END,
+    NULL
+  FROM external_source.GiaHanMuon
+  ''',
+  '''
+  INSERT OR IGNORE INTO BaoCao
+    (MaBC, LoaiBaoCao, TuNgay, DenNgay, NgayLap, NoiDungTongHop, MaNV)
+  SELECT
+    'EXT-' || MaBC,
+    CASE LoaiBaoCao
+      WHEN 'thiet_bi' THEN 'Thiết bị'
+      WHEN 'doanh_thu' THEN 'Doanh thu'
+      WHEN 'bao_tri' THEN 'Bảo trì'
+      WHEN 'khach_hang' THEN 'Khách hàng'
+      ELSE 'Tổng hợp'
+    END,
+    TuNgay,
+    DenNgay,
+    NgayLap,
+    COALESCE(NULLIF(NoiDungTongLap, ''), 'Báo cáo nhập từ database nguồn'),
+    'EXT-' || MaNV
+  FROM external_source.BaoCao
+  ''',
+];
 
 const List<String> _schemaStatements = [
   '''

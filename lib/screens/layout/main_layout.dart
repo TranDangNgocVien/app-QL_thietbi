@@ -103,7 +103,7 @@ class _MainLayoutState extends State<MainLayout> {
         ),
         const NavigationDestination(
           icon: Icon(Icons.receipt_long),
-          label: 'Đơn thuê',
+          label: 'Phiếu mượn',
         ),
         const NavigationDestination(
           icon: Icon(Icons.people),
@@ -214,7 +214,7 @@ class _MainLayoutState extends State<MainLayout> {
       ),
       ListTile(
         leading: const Icon(Icons.list_alt),
-        title: const Text('Đơn thuê'),
+        title: const Text('Phiếu mượn'),
         onTap: () {
           Navigator.pop(context);
           setState(() => currentIndex = 2);

@@ -1,7 +1,14 @@
 import 'package:flutter/material.dart';
 
+import '../../core/app_data_refresh.dart';
 import '../../core/constants/user_session.dart';
 import '../../core/routes/app_routes.dart';
+import '../../data/dummy_data.dart' as dummy;
+import '../../models/device.dart';
+import '../../models/rental_order.dart';
+import '../../services/device_storage_service.dart';
+import '../../services/maintenance_request_service.dart';
+import '../../services/order_service.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -11,7 +18,27 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
+  late Future<_DashboardData> _dashboardDataFuture;
+
   String get _role => UserSession.role;
+
+  @override
+  void initState() {
+    super.initState();
+    _dashboardDataFuture = _loadDashboardData();
+    AppDataRefresh.notifier.addListener(_handleDataRefresh);
+  }
+
+  void _handleDataRefresh() {
+    if (!mounted) return;
+    setState(() => _dashboardDataFuture = _loadDashboardData());
+  }
+
+  @override
+  void dispose() {
+    AppDataRefresh.notifier.removeListener(_handleDataRefresh);
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -48,13 +75,38 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
             const SizedBox(height: 10),
-            _kpiSection(isManager),
+            FutureBuilder<_DashboardData>(
+              future: _dashboardDataFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState != ConnectionState.done) {
+                  return const SizedBox(
+                    height: 96,
+                    child: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                if (snapshot.hasError) {
+                  return _infoCard('Không tải được dữ liệu tổng quan');
+                }
+                return _kpiSection(isManager, snapshot.data!);
+              },
+            ),
             const SizedBox(height: 18),
             Text('Chức năng nhanh', style: theme.textTheme.titleMedium),
             const SizedBox(height: 10),
             _quickActions(isManager),
-            const SizedBox(height: 18),
-            _focusPanel(isManager),
+            if (isManager) ...[
+              const SizedBox(height: 18),
+              FutureBuilder<_DashboardData>(
+                future: _dashboardDataFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState != ConnectionState.done ||
+                      snapshot.hasError) {
+                    return const SizedBox.shrink();
+                  }
+                  return _focusPanel(snapshot.data!);
+                },
+              ),
+            ],
           ],
         ),
       ),
@@ -81,7 +133,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         children: [
           CircleAvatar(
             radius: 24,
-            backgroundColor: Colors.white.withOpacity(0.2),
+            backgroundColor: Colors.white.withValues(alpha: 0.2),
             child: Icon(
               isManager ? Icons.admin_panel_settings : Icons.badge,
               color: Colors.white,
@@ -103,7 +155,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 Text(
                   isManager
                       ? 'Kiểm soát báo cáo, chỉ số và duyệt quy trình quan trọng'
-                      : 'Xử lý đơn thuê, giao nhận và cập nhật tình trạng thiết bị',
+                      : 'Xử lý phiếu mượn, giao nhận và cập nhật tình trạng thiết bị',
                   style: const TextStyle(color: Colors.white70),
                 ),
               ],
@@ -218,32 +270,73 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget _kpiSection(bool isManager) {
+  Future<_DashboardData> _loadDashboardData() async {
+    final orderService = OrderService();
+    await orderService.loadOrders(fallback: dummy.rentalOrders);
+    final devices = await DeviceStorageService.instance.loadDevices(
+      fallback: dummy.devices,
+    );
+    final now = DateTime.now();
+    var pendingMaintenance = 0;
+    try {
+      final requests = await MaintenanceRequestService.instance
+          .loadRequestsForReview();
+      pendingMaintenance = requests
+          .where((request) => request.status == 'pending')
+          .length;
+    } catch (_) {
+      pendingMaintenance = 0;
+    }
+
+    return _DashboardData(
+      orders: List<RentalOrder>.from(orderService.orders),
+      devices: devices,
+      pendingMaintenance: pendingMaintenance,
+      today: DateTime(now.year, now.month, now.day),
+    );
+  }
+
+  Widget _kpiSection(bool isManager, _DashboardData data) {
     final managerCards = [
       _statCard(
         'Doanh thu tháng',
-        '245 tr',
+        _formatCompactCurrency(data.monthRevenue),
         const Color(0xFF1565C0),
         Icons.payments,
       ),
       _statCard(
         'Đơn quá hạn',
-        '7',
+        '${data.overdueOrders}',
         const Color(0xFFD84315),
         Icons.warning_amber,
       ),
-      _statCard('Cần duyệt', '5', const Color(0xFF6A1B9A), Icons.fact_check),
+      _statCard(
+        'Cần duyệt',
+        '${data.pendingMaintenance}',
+        const Color(0xFF6A1B9A),
+        Icons.fact_check,
+      ),
     ];
 
     final staffCards = [
-      _statCard('Đang thuê', '26', const Color(0xFF2E7D32), Icons.shopping_bag),
+      _statCard(
+        'Đang thuê',
+        '${data.activeOrders}',
+        const Color(0xFF2E7D32),
+        Icons.shopping_bag,
+      ),
       _statCard(
         'Trả hôm nay',
-        '11',
+        '${data.dueTodayOrders}',
         const Color(0xFF00838F),
         Icons.assignment_return,
       ),
-      _statCard('Sẵn sàng', '84', const Color(0xFF283593), Icons.inventory_2),
+      _statCard(
+        'Sẵn sàng',
+        '${data.availableDevices}',
+        const Color(0xFF283593),
+        Icons.inventory_2,
+      ),
     ];
 
     final cards = isManager ? managerCards : staffCards;
@@ -296,7 +389,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       _ActionItem(
         Icons.add_shopping_cart,
-        'Tạo đơn thuê',
+        'Tạo phiếu mượn',
         const Color(0xFFF57C00),
         AppRoutes.createRental,
       ),
@@ -308,7 +401,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       _ActionItem(
         Icons.list_alt,
-        'Danh sách đơn',
+        'Danh sách phiếu',
         const Color(0xFF5E35B1),
         AppRoutes.rentalOrders,
       ),
@@ -329,14 +422,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
       itemBuilder: (context, index) {
         final action = actions[index];
         return InkWell(
-          onTap: () => Navigator.pushNamed(context, action.route),
+          onTap: () async {
+            final changed = await Navigator.pushNamed(context, action.route);
+            if (changed == true && context.mounted) {
+              setState(() => _dashboardDataFuture = _loadDashboardData());
+            }
+          },
           borderRadius: BorderRadius.circular(16),
           child: Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: action.color.withOpacity(0.1),
+              color: action.color.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: action.color.withOpacity(0.2)),
+              border: Border.all(color: action.color.withValues(alpha: 0.2)),
             ),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -356,26 +454,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget _focusPanel(bool isManager) {
-    if (isManager) {
-      return _panel(
-        title: 'Việc cần xử lý trong ngày (Quản lý)',
-        rows: const [
-          'Phê duyệt 3 yêu cầu hủy đơn đang chờ',
-          'Kiểm tra 2 thiết bị cần bảo trì định kỳ',
-          'Xem báo cáo doanh thu cuối ngày lúc 20:00',
-        ],
-      );
-    }
-
+  Widget _focusPanel(_DashboardData data) {
     return _panel(
-      title: 'Công việc ca trực (Nhân viên)',
-      rows: const [
-        'Bàn giao 4 đơn đang chờ khách nhận',
-        'Theo dõi 2 đơn sắp đến hạn trong 24h',
-        'Ghi nhận biên bản trả thiết bị vào cuối ca',
+      title: 'Việc cần xử lý trong ngày (Quản lý)',
+      rows: [
+        'Duyệt ${data.pendingMaintenance} yêu cầu bảo trì đang chờ',
+        'Theo dõi ${data.overdueOrders} đơn quá hạn',
+        'Kiểm tra ${data.maintenanceDevices} thiết bị đang bảo trì hoặc ngừng cho thuê',
       ],
     );
+  }
+
+  Widget _infoCard(String message) {
+    return Card(
+      child: Padding(padding: const EdgeInsets.all(14), child: Text(message)),
+    );
+  }
+
+  String _formatCompactCurrency(double value) {
+    if (value >= 1000000000) {
+      return '${(value / 1000000000).toStringAsFixed(1)} tỷ';
+    }
+    if (value >= 1000000) {
+      return '${(value / 1000000).toStringAsFixed(0)} tr';
+    }
+    if (value >= 1000) {
+      return '${(value / 1000).toStringAsFixed(0)} nghìn';
+    }
+    return value.toStringAsFixed(0);
   }
 
   Widget _panel({required String title, required List<String> rows}) {
@@ -409,7 +515,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
+        color: color.withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Column(
@@ -440,4 +546,63 @@ class _ActionItem {
   final String route;
 
   const _ActionItem(this.icon, this.title, this.color, this.route);
+}
+
+class _DashboardData {
+  final List<RentalOrder> orders;
+  final List<Device> devices;
+  final int pendingMaintenance;
+  final DateTime today;
+
+  const _DashboardData({
+    required this.orders,
+    required this.devices,
+    required this.pendingMaintenance,
+    required this.today,
+  });
+
+  int get activeOrders => orders.where(_isActiveOrder).length;
+
+  int get overdueOrders => orders
+      .where(
+        (order) =>
+            _isActiveOrder(order) && _dateOnly(order.endDate).isBefore(today),
+      )
+      .length;
+
+  int get dueTodayOrders => orders
+      .where(
+        (order) => _isActiveOrder(order) && _dateOnly(order.endDate) == today,
+      )
+      .length;
+
+  int get availableDevices =>
+      devices.fold<int>(0, (sum, device) => sum + device.quantityAvailable);
+
+  int get maintenanceDevices => devices
+      .where(
+        (device) =>
+            device.status == 'Bảo trì' ||
+            device.status == 'Hỏng' ||
+            device.status == 'Ngừng cho thuê',
+      )
+      .length;
+
+  double get monthRevenue => orders
+      .where(
+        (order) =>
+            order.startDate.year == today.year &&
+            order.startDate.month == today.month,
+      )
+      .fold<double>(0, (sum, order) => sum + order.totalPrice);
+
+  static bool _isActiveOrder(RentalOrder order) {
+    return order.status == 'Đang thuê' ||
+        order.status == 'Đang mượn' ||
+        order.status == 'Quá hạn';
+  }
+
+  static DateTime _dateOnly(DateTime date) {
+    return DateTime(date.year, date.month, date.day);
+  }
 }

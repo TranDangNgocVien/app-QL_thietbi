@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 
-import '../../data/dummy_data.dart';
+import '../../core/app_data_refresh.dart';
 import '../../models/customer.dart';
+import '../../services/customer_storage_service.dart';
 
 class CustomerFormScreen extends StatefulWidget {
   final Customer? customer;
@@ -18,6 +19,9 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
   late final TextEditingController _phoneController;
   late final TextEditingController _emailController;
   late final TextEditingController _addressController;
+  List<Customer> _customers = const [];
+  bool _isLoadingCustomers = true;
+  bool _isSaving = false;
 
   @override
   void initState() {
@@ -27,6 +31,24 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
     _phoneController = TextEditingController(text: customer?.phone ?? '');
     _emailController = TextEditingController(text: customer?.email ?? '');
     _addressController = TextEditingController(text: customer?.address ?? '');
+    _loadCustomers();
+  }
+
+  Future<void> _loadCustomers() async {
+    try {
+      final loaded = await CustomerStorageService.instance.loadCustomers();
+      if (!mounted) return;
+      setState(() {
+        _customers = loaded;
+        _isLoadingCustomers = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _isLoadingCustomers = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error.toString()), backgroundColor: Colors.red),
+      );
+    }
   }
 
   @override
@@ -61,7 +83,7 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
                             borderRadius: BorderRadius.circular(12),
                             boxShadow: [
                               BoxShadow(
-                                color: Colors.black.withOpacity(0.1),
+                                color: Colors.black.withValues(alpha: 0.1),
                                 blurRadius: 12,
                                 offset: const Offset(0, 4),
                               ),
@@ -94,7 +116,7 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
                       borderRadius: BorderRadius.circular(24),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withOpacity(0.08),
+                          color: Colors.black.withValues(alpha: 0.08),
                           blurRadius: 16,
                           offset: const Offset(0, 8),
                         ),
@@ -129,7 +151,7 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
                             if (!phoneRegex.hasMatch(phone)) {
                               return 'Số điện thoại phải có 10-11 chữ số';
                             }
-                            final duplicate = customers.any(
+                            final duplicate = _customers.any(
                               (item) =>
                                   item.phone == phone &&
                                   item.id != widget.customer?.id,
@@ -183,14 +205,16 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
                               borderRadius: BorderRadius.circular(16),
                               boxShadow: [
                                 BoxShadow(
-                                  color: Colors.blue.withOpacity(0.3),
+                                  color: Colors.blue.withValues(alpha: 0.3),
                                   blurRadius: 12,
                                   offset: const Offset(0, 4),
                                 ),
                               ],
                             ),
                             child: ElevatedButton(
-                              onPressed: _saveCustomer,
+                              onPressed: _isLoadingCustomers || _isSaving
+                                  ? null
+                                  : _saveCustomer,
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.transparent,
                                 shadowColor: Colors.transparent,
@@ -240,7 +264,7 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
             Container(
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: Colors.blue.withOpacity(0.1),
+                color: Colors.blue.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: const Icon(Icons.person, color: Colors.blue, size: 20),
@@ -265,7 +289,7 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
           decoration: InputDecoration(
             hintText: hint,
             filled: true,
-            fillColor: Colors.grey.withOpacity(0.05),
+            fillColor: Colors.grey.withValues(alpha: 0.05),
             prefixIcon: Padding(
               padding: const EdgeInsets.all(12),
               child: Icon(icon, color: Colors.blue, size: 22),
@@ -273,14 +297,14 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
               borderSide: BorderSide(
-                color: Colors.grey.withOpacity(0.2),
+                color: Colors.grey.withValues(alpha: 0.2),
                 width: 1,
               ),
             ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
               borderSide: BorderSide(
-                color: Colors.grey.withOpacity(0.2),
+                color: Colors.grey.withValues(alpha: 0.2),
                 width: 1,
               ),
             ),
@@ -288,7 +312,7 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
               borderRadius: BorderRadius.all(Radius.circular(12)),
               borderSide: BorderSide(color: Colors.blue, width: 2),
             ),
-            hintStyle: TextStyle(color: Colors.grey.withOpacity(0.6)),
+            hintStyle: TextStyle(color: Colors.grey.withValues(alpha: 0.6)),
           ),
         ),
       ],
@@ -298,6 +322,8 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
   Future<void> _saveCustomer() async {
     if (!_formKey.currentState!.validate()) return;
 
+    setState(() => _isSaving = true);
+
     final customer = Customer(
       id: widget.customer?.id ?? _generateCustomerId(),
       name: _nameController.text.trim(),
@@ -306,13 +332,16 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
       address: _addressController.text.trim(),
     );
 
-    final existingIndex = customers.indexWhere(
-      (item) => item.id == customer.id,
-    );
-    if (existingIndex == -1) {
-      customers.add(customer);
-    } else {
-      customers[existingIndex] = customer;
+    try {
+      await CustomerStorageService.instance.saveCustomer(customer);
+      AppDataRefresh.notifyChanged();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _isSaving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error.toString()), backgroundColor: Colors.red),
+      );
+      return;
     }
 
     if (!mounted) return;
@@ -331,7 +360,7 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
 
   String _generateCustomerId() {
     var maxNumber = 0;
-    for (final customer in customers) {
+    for (final customer in _customers) {
       final digits = RegExp(r'\d+').firstMatch(customer.id)?.group(0);
       final number = int.tryParse(digits ?? '0') ?? 0;
       if (number > maxNumber) {

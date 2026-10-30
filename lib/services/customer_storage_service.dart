@@ -1,4 +1,3 @@
-import '../data/dummy_data.dart' as dummy;
 import '../models/customer.dart';
 import 'app_database.dart';
 
@@ -7,33 +6,20 @@ class CustomerStorageService {
 
   static final CustomerStorageService instance = CustomerStorageService._();
 
-  Future<List<Customer>> loadCustomers({
-    List<Customer> fallback = const [],
-  }) async {
-    try {
-      final db = await AppDatabase.instance.database;
-      final rows = await db.query('KhachHang', orderBy: 'MaKH');
-      if (rows.isEmpty) {
-        return List<Customer>.from(
-          fallback.isNotEmpty ? fallback : dummy.customers,
-        );
-      }
-      return rows
-          .map(
-            (row) => Customer(
-              id: row['MaKH'] as String,
-              name: row['HoTen'] as String,
-              phone: row['SDT'] as String? ?? '',
-              email: row['Email'] as String? ?? '',
-              address: row['DiaChi'] as String? ?? '',
-            ),
-          )
-          .toList();
-    } catch (_) {
-      return List<Customer>.from(
-        fallback.isNotEmpty ? fallback : dummy.customers,
-      );
-    }
+  Future<List<Customer>> loadCustomers() async {
+    final db = await AppDatabase.instance.database;
+    final rows = await db.query('KhachHang', orderBy: 'MaKH');
+    return rows
+        .map(
+          (row) => Customer(
+            id: row['MaKH'] as String,
+            name: row['HoTen'] as String,
+            phone: row['SDT'] as String? ?? '',
+            email: row['Email'] as String? ?? '',
+            address: row['DiaChi'] as String? ?? '',
+          ),
+        )
+        .toList();
   }
 
   Future<void> saveCustomers(List<Customer> customers) async {

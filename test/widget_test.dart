@@ -29,9 +29,7 @@ void main() {
     expect(find.text('Thêm thiết bị thành công'), findsOneWidget);
   });
 
-  testWidgets('Vai trò chưa chọn vẫn rõ và được xếp thành lưới hai cột', (
-    tester,
-  ) async {
+  testWidgets('Màn đăng nhập không còn chọn vai trò', (tester) async {
     UserSession.role = 'Nhân viên';
     tester.view.physicalSize = const Size(900, 1900);
     tester.view.devicePixelRatio = 2;
@@ -43,28 +41,9 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final customerText = tester.widget<Text>(find.text('Khách hàng'));
-    expect(customerText.style?.color, const Color(0xFF183B56));
-
-    await tester.tap(find.text('Kỹ thuật viên'));
-    await tester.pump();
-
-    final technicianText = tester.widget<Text>(find.text('Kỹ thuật viên'));
-    final employeeText = tester.widget<Text>(find.text('Nhân viên'));
-    expect(technicianText.style?.color, Colors.white);
-    expect(employeeText.style?.color, const Color(0xFF183B56));
-
-    final employeeTop = tester.getTopLeft(
-      find.byKey(const ValueKey('login-role-Nhân viên')),
-    );
-    final managerTop = tester.getTopLeft(
-      find.byKey(const ValueKey('login-role-Quản lý')),
-    );
-    final customerTop = tester.getTopLeft(
-      find.byKey(const ValueKey('login-role-Khách hàng')),
-    );
-    expect((employeeTop.dy - managerTop.dy).abs(), lessThan(4));
-    expect(customerTop.dy, greaterThan(employeeTop.dy));
+    expect(find.text('Vai trò đăng nhập'), findsNothing);
+    expect(find.byKey(const ValueKey('login-role-Nhân viên')), findsNothing);
+    expect(find.text('Đăng nhập'), findsOneWidget);
   });
 
   testWidgets('Hủy hộp thoại từ chối không phát sinh lỗi', (tester) async {

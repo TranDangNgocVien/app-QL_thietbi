@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 
-import '../../data/dummy_data.dart';
+import '../../core/app_data_refresh.dart';
 import '../../models/customer.dart';
+import '../../services/customer_storage_service.dart';
 import 'customer_form_screen.dart';
 
 class CustomerListScreen extends StatefulWidget {
@@ -13,10 +14,43 @@ class CustomerListScreen extends StatefulWidget {
 
 class _CustomerListScreenState extends State<CustomerListScreen> {
   final TextEditingController _searchController = TextEditingController();
+  List<Customer> _customers = const [];
+  bool _isLoading = true;
+  Object? _loadError;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCustomers();
+    AppDataRefresh.notifier.addListener(_loadCustomers);
+  }
+
+  Future<void> _loadCustomers() async {
+    if (mounted) {
+      setState(() {
+        _isLoading = true;
+        _loadError = null;
+      });
+    }
+    try {
+      final loaded = await CustomerStorageService.instance.loadCustomers();
+      if (!mounted) return;
+      setState(() {
+        _customers = loaded;
+        _isLoading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loadError = error;
+        _isLoading = false;
+      });
+    }
+  }
 
   List<Customer> get _filteredCustomers {
     final keyword = _searchController.text.trim().toLowerCase();
-    return customers.where((customer) {
+    return _customers.where((customer) {
       if (keyword.isEmpty) return true;
       return customer.id.toLowerCase().contains(keyword) ||
           customer.name.toLowerCase().contains(keyword) ||
@@ -35,7 +69,7 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
             context,
             MaterialPageRoute(builder: (_) => const CustomerFormScreen()),
           );
-          if (mounted) setState(() {});
+          await _loadCustomers();
         },
         icon: const Icon(Icons.add),
         label: const Text('Thêm khách hàng'),
@@ -96,7 +130,11 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
               ),
               const SizedBox(height: 16),
               Expanded(
-                child: _filteredCustomers.isEmpty
+                child: _isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _loadError != null
+                    ? _errorState()
+                    : _filteredCustomers.isEmpty
                     ? _emptyState()
                     : ListView.builder(
                         padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -110,7 +148,7 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
                               borderRadius: BorderRadius.circular(20),
                               boxShadow: [
                                 BoxShadow(
-                                  color: Colors.black.withOpacity(0.08),
+                                  color: Colors.black.withValues(alpha: 0.08),
                                   blurRadius: 10,
                                   offset: const Offset(0, 4),
                                 ),
@@ -165,7 +203,7 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
                                         CustomerFormScreen(customer: customer),
                                   ),
                                 );
-                                if (mounted) setState(() {});
+                                await _loadCustomers();
                               },
                               onLongPress: () =>
                                   _confirmDeleteCustomer(customer),
@@ -201,6 +239,31 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
     );
   }
 
+  Widget _errorState() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.error_outline, size: 56, color: Colors.red),
+            const SizedBox(height: 12),
+            Text(
+              'Không tải được dữ liệu khách hàng: $_loadError',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: _loadCustomers,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Thử lại'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _confirmDeleteCustomer(Customer customer) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -224,16 +287,24 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
 
     if (confirmed != true) return;
 
-    customers.removeWhere((item) => item.id == customer.id);
-    if (!mounted) return;
-    setState(() {});
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Đã xóa khách hàng ${customer.name}')),
-    );
+    try {
+      await CustomerStorageService.instance.deleteCustomer(customer.id);
+      AppDataRefresh.notifyChanged();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Đã xóa khách hàng ${customer.name}')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error.toString()), backgroundColor: Colors.red),
+      );
+    }
   }
 
   @override
   void dispose() {
+    AppDataRefresh.notifier.removeListener(_loadCustomers);
     _searchController.dispose();
     super.dispose();
   }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../core/app_data_refresh.dart';
 import '../../core/routes/app_routes.dart';
 import '../../models/device.dart';
 import '../../models/rental_order.dart';
@@ -18,21 +19,33 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
   @override
   void initState() {
     super.initState();
+    AppDataRefresh.notifier.addListener(_handleDataRefresh);
     _loadOrders();
   }
 
   Future<void> _loadOrders() async {
     try {
+      if (mounted) setState(() => _isLoading = true);
       await _service.loadOrders(fallback: const []);
       if (!mounted) return;
       setState(() => _isLoading = false);
     } catch (error) {
       if (!mounted) return;
       setState(() => _isLoading = false);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Không thể tải đơn thuê: $error')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Không thể tải phiếu mượn: $error')),
+      );
     }
+  }
+
+  void _handleDataRefresh() {
+    if (mounted) _loadOrders();
+  }
+
+  @override
+  void dispose() {
+    AppDataRefresh.notifier.removeListener(_handleDataRefresh);
+    super.dispose();
   }
 
   @override
@@ -42,7 +55,7 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Danh sách đơn thuê"),
+        title: const Text("Danh sách phiếu mượn"),
         centerTitle: true,
         elevation: 0,
         backgroundColor: const Color(0xFF1565C0),
@@ -56,7 +69,7 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
           borderRadius: BorderRadius.circular(16),
           boxShadow: [
             BoxShadow(
-              color: const Color(0xFF1565C0).withOpacity(0.3),
+              color: const Color(0xFF1565C0).withValues(alpha: 0.3),
               spreadRadius: 3,
               blurRadius: 10,
               offset: const Offset(0, 4),
@@ -71,7 +84,7 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
           backgroundColor: Colors.transparent,
           elevation: 0,
           icon: const Icon(Icons.add),
-          label: const Text("Tạo đơn mới"),
+          label: const Text("Tạo phiếu mới"),
         ),
       ),
       body: Container(
@@ -89,7 +102,7 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20),
                 child: Text(
-                  "Danh sách đơn thuê thiết bị",
+                  "Danh sách phiếu mượn thiết bị",
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                     fontWeight: FontWeight.bold,
                     color: const Color(0xFF0D47A1),
@@ -112,7 +125,7 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
                             ),
                             const SizedBox(height: 16),
                             Text(
-                              "Chưa có đơn thuê nào",
+                              "Chưa có phiếu mượn nào",
                               style: TextStyle(
                                 fontSize: 18,
                                 color: Colors.grey.shade600,
@@ -120,7 +133,7 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
                             ),
                             const SizedBox(height: 8),
                             Text(
-                              "Nhấn nút + để tạo đơn thuê mới",
+                              "Nhấn nút + để tạo phiếu mượn mới",
                               style: TextStyle(
                                 fontSize: 14,
                                 color: Colors.grey.shade500,
@@ -144,7 +157,7 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
                               borderRadius: BorderRadius.circular(20),
                               boxShadow: [
                                 BoxShadow(
-                                  color: Colors.black.withOpacity(0.1),
+                                  color: Colors.black.withValues(alpha: 0.1),
                                   spreadRadius: 1,
                                   blurRadius: 10,
                                   offset: const Offset(0, 4),
@@ -171,7 +184,7 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
                                 ),
                               ),
                               title: Text(
-                                "Đơn thuê #${order.id}",
+                                "Phiếu mượn #${order.id}",
                                 style: const TextStyle(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 18,
@@ -219,7 +232,7 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
                                           ),
                                         ),
                                         child: Text(
-                                          order.status,
+                                          _displayStatus(order.status),
                                           style: TextStyle(
                                             color: _getStatusTextColor(
                                               order.status,
@@ -251,11 +264,11 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
                                           if (canEdit)
                                             const PopupMenuItem(
                                               value: 'edit',
-                                              child: Text('Sửa đơn'),
+                                              child: Text('Sửa phiếu'),
                                             ),
                                           const PopupMenuItem(
                                             value: 'delete',
-                                            child: Text('Xóa đơn'),
+                                            child: Text('Xóa phiếu'),
                                           ),
                                         ],
                                         icon: const Icon(Icons.more_vert),
@@ -331,6 +344,10 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
     return order.status == 'Hoàn thành' || order.status == 'Đã trả';
   }
 
+  String _displayStatus(String status) {
+    return status == 'Đã trả' ? 'Hoàn thành' : status;
+  }
+
   String _formatDate(DateTime date) {
     return '${date.day.toString().padLeft(2, '0')}/'
         '${date.month.toString().padLeft(2, '0')}/${date.year}';
@@ -391,8 +408,8 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: const Text('Xóa đơn thuê'),
-          content: Text('Bạn có chắc muốn xóa đơn #${order.id}?'),
+          title: const Text('Xóa phiếu mượn'),
+          content: Text('Bạn có chắc muốn xóa phiếu #${order.id}?'),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context, false),
@@ -414,7 +431,7 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
     setState(() {});
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(SnackBar(content: Text('Đã xóa đơn #${order.id}')));
+    ).showSnackBar(SnackBar(content: Text('Đã xóa phiếu #${order.id}')));
   }
 
   Future<void> _showOrderDetails(RentalOrder order) async {
@@ -422,7 +439,7 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: Text('Chi tiết đơn #${order.id}'),
+          title: Text('Chi tiết phiếu mượn #${order.id}'),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -445,7 +462,10 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
                   label: 'Tổng tiền',
                   value: _formatMoney(order.totalPrice),
                 ),
-                _DetailRow(label: 'Trạng thái', value: order.status),
+                _DetailRow(
+                  label: 'Trạng thái',
+                  value: _displayStatus(order.status),
+                ),
               ],
             ),
           ),
@@ -473,7 +493,7 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
     if (_isClosedOrder(order)) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Đơn #${order.id} đã hoàn thành, không thể sửa'),
+          content: Text('Phiếu #${order.id} đã hoàn thành, không thể sửa'),
         ),
       );
       return;
@@ -507,7 +527,7 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
     final statusItems = <String>{
       'Đang thuê',
       'Quá hạn',
-      'Đã trả',
+      'Hoàn thành',
       if (order.status.isNotEmpty) order.status,
     }.toList();
     var selectedStatus = order.status;
@@ -526,7 +546,7 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: Text('Sửa đơn #${order.id}'),
+          title: Text('Sửa phiếu #${order.id}'),
           insetPadding: const EdgeInsets.symmetric(
             horizontal: 20,
             vertical: 24,
@@ -540,7 +560,8 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
                   children: [
                     _EditSectionHeader(
                       title: 'Thông tin thuê',
-                      subtitle: 'Chỉnh các thông tin cần cập nhật cho đơn này',
+                      subtitle:
+                          'Chỉnh các thông tin cần cập nhật cho phiếu này',
                     ),
                     const SizedBox(height: 12),
                     TextField(
@@ -704,12 +725,13 @@ class _RentalOrdersListScreenState extends State<RentalOrdersListScreen> {
       totalPrice: updatedPrice,
       status: selectedStatus,
     );
-    _service.updateOrder(order.id, updatedOrder);
+    await _service.updateOrder(order.id, updatedOrder);
     if (!mounted) return;
-    setState(() {});
+    await _loadOrders();
+    if (!mounted) return;
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(SnackBar(content: Text('Đã cập nhật đơn #${order.id}')));
+    ).showSnackBar(SnackBar(content: Text('Đã cập nhật phiếu #${order.id}')));
   }
 }
 

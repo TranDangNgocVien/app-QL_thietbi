@@ -26,12 +26,23 @@ class AuthService {
   Future<AuthUser?> login({
     required String emailOrUsername,
     required String password,
-    required String role,
+    String? role,
   }) async {
+    if (role == null) {
+      return _loginAnyRole(emailOrUsername, password);
+    }
+
     if (role == 'Khách hàng') {
       return _loginCustomer(emailOrUsername, password);
     }
     return _loginEmployee(emailOrUsername, password, role);
+  }
+
+  Future<AuthUser?> _loginAnyRole(String login, String password) async {
+    return await _loginCustomer(login, password) ??
+        await _loginTechnician(login, password) ??
+        await _loginEmployee(login, password, 'Quản lý') ??
+        await _loginEmployee(login, password, 'Nhân viên');
   }
 
   Future<AuthUser?> _loginCustomer(String login, String password) async {
@@ -75,18 +86,53 @@ class AuthService {
       'Quản lý' => const ['Quản lý', 'Admin'],
       _ => const ['Nhân viên', 'Kế toán'],
     };
+    final appRoleValues = switch (role) {
+      'Quản lý' => const ['unit_manager', 'admin'],
+      _ => const ['company_staff', 'approver'],
+    };
     final placeholders = List.filled(roleValues.length, '?').join(',');
+    final appPlaceholders = List.filled(appRoleValues.length, '?').join(',');
     final rows = await db.rawQuery(
       '''
-      SELECT MaNV, TenNV, Email
-      FROM NhanVien
-      WHERE TrangThai = 'Đang làm việc'
-        AND (lower(Email) = lower(?) OR lower(TenNV) = lower(?) OR MaNV = ?)
-        AND MatKhau = ?
-        AND QuyenHan IN ($placeholders)
+      SELECT employee.MaNV, employee.TenNV,
+             COALESCE(app.Email, employee.Email) AS Email
+      FROM NhanVien employee
+      LEFT JOIN AppUsers app
+        ON app.MaNV = employee.MaNV
+       AND app.IsActive = 1
+      WHERE employee.TrangThai = 'Đang làm việc'
+        AND (
+          (
+            app.Id IS NOT NULL
+            AND app.RoleId IN ($appPlaceholders)
+            AND (lower(app.Email) = lower(?) OR app.Phone = ? OR lower(app.FullName) = lower(?))
+            AND app.PasswordHash = ?
+          )
+          OR
+          (
+            employee.QuyenHan IN ($placeholders)
+            AND (
+              lower(employee.Email) = lower(?)
+              OR lower(employee.TenNV) = lower(?)
+              OR employee.MaNV = ?
+            )
+            AND employee.MatKhau = ?
+          )
+        )
       LIMIT 1
       ''',
-      [keyword, keyword, keyword, password, ...roleValues],
+      [
+        ...appRoleValues,
+        keyword,
+        keyword,
+        keyword,
+        password,
+        ...roleValues,
+        keyword,
+        keyword,
+        keyword,
+        password,
+      ],
     );
     if (rows.isEmpty) return null;
     final row = rows.first;
